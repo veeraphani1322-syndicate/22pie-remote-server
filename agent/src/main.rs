@@ -17,12 +17,12 @@ async fn main() -> Result<()> {
     let device = DeviceIdentity::load()?;
 
     println!(
-        "\n22Pie Remote Agent v{}\n\nDevice:\n{}\n\nDevice ID:\n{}\n\nOperating System:\n{}\n\nArchitecture:\n{}\n\nConnecting to:\n{}\n",
+        "\n22Pie Remote Agent v{}\n\nDevice Name:\n{}\n\nOperating System:\n{}\n\nArchitecture:\n{}\n\nDevice ID:\n{}\n\nServer:\n{}\n",
         device.agent_version,
         device.device_name,
-        device.device_id,
         device.operating_system,
         device.architecture,
+        device.device_id,
         config.server_url,
     );
 

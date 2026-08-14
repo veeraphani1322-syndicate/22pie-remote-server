@@ -1,9 +1,13 @@
 [package]
 name = "pie22-remote-agent"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Lightweight authorized-device agent for 22Pie Remote Server"
 license = "UNLICENSED"
+
+[[bin]]
+name = "22PieRemoteAgent"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"

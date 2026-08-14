@@ -1,0 +1,44 @@
+name: Build Windows Agent
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "agent/**"
+      - ".github/workflows/build-windows-agent.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build x86_64 Windows executable
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: agent
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build release executable
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/22PieRemoteAgent.exe"
+          if (-not (Test-Path $exe)) { throw "Expected executable not found: $exe" }
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: 22PieRemoteAgent-Windows
+          path: agent/target/x86_64-pc-windows-msvc/release/22PieRemoteAgent.exe
+          if-no-files-found: error

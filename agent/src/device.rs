@@ -1,6 +1,7 @@
+use crate::config::app_data_dir;
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 use sysinfo::System;
 use uuid::Uuid;
@@ -14,6 +15,12 @@ pub struct DeviceIdentity {
     #[serde(skip)]
     pub architecture: String,
     pub agent_version: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredIdentity {
+    device_id: Uuid,
 }
 
 impl DeviceIdentity {
@@ -37,9 +44,12 @@ fn os_description() -> String {
 }
 
 fn identity_path() -> Result<PathBuf> {
-    let project_dirs = ProjectDirs::from("com", "22Pie", "RemoteAgent")
-        .context("could not determine the local application data directory")?;
-    Ok(project_dirs.config_dir().join("device-id"))
+    Ok(app_data_dir()?.join("device.json"))
+}
+
+fn legacy_identity_path() -> Option<PathBuf> {
+    ProjectDirs::from("com", "22Pie", "RemoteAgent")
+        .map(|project_dirs| project_dirs.config_dir().join("device-id"))
 }
 
 fn load_or_create_device_id() -> Result<Uuid> {
@@ -47,16 +57,41 @@ fn load_or_create_device_id() -> Result<Uuid> {
     if path.exists() {
         let saved = fs::read_to_string(&path)
             .with_context(|| format!("failed to read device identity at {}", path.display()))?;
-        return Uuid::parse_str(saved.trim())
-            .with_context(|| format!("invalid device identity at {}", path.display()));
+        let identity: StoredIdentity = serde_json::from_str(&saved)
+            .with_context(|| format!("invalid device identity at {}", path.display()))?;
+        return Ok(identity.device_id);
+    }
+
+    if let Some(legacy_path) = legacy_identity_path().filter(|legacy_path| legacy_path.exists()) {
+        let saved = fs::read_to_string(&legacy_path).with_context(|| {
+            format!(
+                "failed to read legacy device identity at {}",
+                legacy_path.display()
+            )
+        })?;
+        let id = Uuid::parse_str(saved.trim()).with_context(|| {
+            format!(
+                "invalid legacy device identity at {}",
+                legacy_path.display()
+            )
+        })?;
+        save_device_id(&path, id)?;
+        return Ok(id);
     }
 
     let id = Uuid::new_v4();
+    save_device_id(&path, id)?;
+    Ok(id)
+}
+
+fn save_device_id(path: &PathBuf, id: Uuid) -> Result<()> {
     let parent = path
         .parent()
         .context("device identity path has no parent")?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    fs::write(&path, format!("{id}\n"))
+    let identity = serde_json::to_string_pretty(&StoredIdentity { device_id: id })
+        .context("failed to serialize device identity")?;
+    fs::write(&path, format!("{identity}\n"))
         .with_context(|| format!("failed to save device identity at {}", path.display()))?;
-    Ok(id)
+    Ok(())
 }

@@ -32,10 +32,12 @@ pub async fn run(config: Config, device: DeviceIdentity, mut shutdown: watch::Re
             break;
         }
 
+        println!("Connecting...");
         info!(url = %config.server_url, "Connecting");
         match connect_async(&config.server_url).await {
             Ok((stream, _)) => {
                 info!("Connected");
+                println!("Connected");
                 backoff = Duration::from_secs(1);
                 match handle_connection(stream, &config, &device, &mut shutdown).await {
                     Ok(ConnectionEnd::Shutdown) => break,
@@ -43,12 +45,20 @@ pub async fn run(config: Config, device: DeviceIdentity, mut shutdown: watch::Re
                     Err(error) => warn!(error = %error, "Connection ended"),
                 }
             }
-            Err(error) => warn!(error = %error, "Connection failed"),
+            Err(error) => {
+                println!("Connection failed");
+                warn!(error = %error, "Connection failed");
+            }
         }
 
         if *shutdown.borrow() {
             break;
         }
+        println!(
+            "Retrying in {} second{}",
+            backoff.as_secs(),
+            if backoff.as_secs() == 1 { "" } else { "s" }
+        );
         info!(seconds = backoff.as_secs(), "Retrying");
         tokio::select! {
             _ = time::sleep(backoff) => {}
@@ -110,6 +120,7 @@ where
         return Ok(ConnectionEnd::Shutdown);
     }
     info!("Registered successfully");
+    println!("Registered successfully\n\nStatus:\nONLINE\n\nPress Ctrl+C to stop.\n");
 
     let mut heartbeat = time::interval(config.heartbeat_interval);
     heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
