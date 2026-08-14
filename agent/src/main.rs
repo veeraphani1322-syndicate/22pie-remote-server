@@ -1,7 +1,9 @@
 mod config;
 mod connection;
+mod consent;
 mod device;
 mod logging;
+mod media;
 mod protocol;
 
 use anyhow::Result;

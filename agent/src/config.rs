@@ -62,7 +62,9 @@ pub fn app_data_dir() -> Result<PathBuf> {
 fn read_file_config() -> Result<FileConfig> {
     let path = app_data_dir()?.join("config.json");
     if !path.exists() {
-        return Ok(FileConfig { remote_server_url: None });
+        return Ok(FileConfig {
+            remote_server_url: None,
+        });
     }
 
     let contents = fs::read_to_string(&path)

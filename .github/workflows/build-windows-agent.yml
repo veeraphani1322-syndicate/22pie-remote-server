@@ -28,7 +28,10 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Build release executable
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+        run: |
+          cargo fmt --check
+          cargo check --locked --target x86_64-pc-windows-msvc
+          cargo build --release --locked --target x86_64-pc-windows-msvc
 
       - name: Verify executable
         shell: pwsh

@@ -5,3 +5,7 @@ dist/
 .DS_Store
 agent/target/
 agent/.env
+data/
+dashboard/.env.local
+dashboard/.next/
+dashboard/node_modules/

@@ -1,11 +1,14 @@
+use crate::media::{MediaCommand, MediaEvent, MediaSession};
 use crate::{
     config::Config,
     device::DeviceIdentity,
     protocol::{AgentMessage, DeviceStatus, ServerMessage},
 };
 use anyhow::{anyhow, Context, Result};
+use futures_util::future::pending;
 use futures_util::{SinkExt, StreamExt};
 use std::{cmp::min, time::Duration};
+use tokio::sync::mpsc;
 use tokio::{sync::watch, time};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
@@ -84,6 +87,7 @@ where
     send(&mut writer, &AgentMessage::register(device)).await?;
 
     let registration = time::timeout(REGISTRATION_TIMEOUT, async {
+        let mut challenge_answered = false;
         loop {
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -94,6 +98,12 @@ where
                 incoming = reader.next() => {
                     let message = parse_incoming(incoming)?;
                     match message {
+                        IncomingMessage::Protocol(ServerMessage::AuthChallenge { nonce }) => {
+                            if challenge_answered { return Err(anyhow!("server sent more than one authentication challenge")); }
+                            let signature = device.sign_challenge(&nonce);
+                            send(&mut writer, &AgentMessage::Authenticate { signature }).await?;
+                            challenge_answered = true;
+                        }
                         IncomingMessage::Protocol(ServerMessage::Registered { device_id, status: DeviceStatus::Online }) => {
                             if device_id != device.device_id.to_string() {
                                 return Err(anyhow!("server registered an unexpected device ID"));
@@ -126,6 +136,12 @@ where
     heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
     let mut awaiting_ack = false;
+    let (consent_tx, mut consent_rx) =
+        mpsc::channel::<(String, bool, Vec<crate::protocol::IceServer>)>(1);
+    let mut consent_pending = false;
+    let mut media: Option<MediaSession> = None;
+    let mut active_session_id: Option<String> = None;
+    let mut local_stop: Option<tokio::sync::oneshot::Receiver<()>> = None;
 
     loop {
         tokio::select! {
@@ -152,9 +168,80 @@ where
                     IncomingMessage::Protocol(ServerMessage::Error { code, message }) => {
                         warn!(%code, %message, "Server reported an error");
                     }
+                    IncomingMessage::Protocol(ServerMessage::SessionRequested { session_id, viewer_name, permissions, ice_servers }) => {
+                        if consent_pending || media.is_some() || permissions != vec![crate::protocol::Permission::ScreenView] {
+                            send(&mut writer, &AgentMessage::SessionReject { session_id: &session_id, reason: "another_request_pending" }).await?;
+                        } else {
+                            consent_pending = true;
+                            let tx = consent_tx.clone();
+                            let device_name = device.device_name.clone();
+                            tokio::spawn(async move {
+                                let allowed = crate::consent::request_screen_view(viewer_name, device_name).await;
+                                let _ = tx.send((session_id, allowed, ice_servers)).await;
+                            });
+                        }
+                    }
+                    IncomingMessage::Protocol(ServerMessage::WebrtcAnswer { session_id, sdp }) => {
+                        if active_session_id.as_deref() == Some(&session_id) {
+                            if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Answer(sdp)).await; }
+                        }
+                    }
+                    IncomingMessage::Protocol(ServerMessage::IceCandidate { session_id, candidate, sdp_mid, sdp_m_line_index }) => {
+                        if active_session_id.as_deref() == Some(&session_id) {
+                            if let Some(media) = &media { let _ = media.commands.send(MediaCommand::IceCandidate { candidate, sdp_mid, sdp_m_line_index }).await; }
+                        }
+                    }
+                    IncomingMessage::Protocol(ServerMessage::SessionEnded { session_id, reason }) => {
+                        if active_session_id.as_deref() == Some(&session_id) {
+                            if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Stop).await; }
+                            media = None; active_session_id = None; local_stop = None;
+                            info!(%session_id, %reason, "Screen sharing ended");
+                        }
+                    }
                     IncomingMessage::Protocol(other) => debug!(?other, "Ignoring unexpected server message"),
                     IncomingMessage::ControlFrame => {}
                     IncomingMessage::Closed => return Ok(ConnectionEnd::Disconnected),
+                }
+            }
+            consent = consent_rx.recv() => {
+                if let Some((session_id, allowed, ice_servers)) = consent {
+                    consent_pending = false;
+                    if allowed {
+                        match crate::media::start(ice_servers).await {
+                            Ok(started) => {
+                                let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+                                crate::consent::show_sharing_indicator(stop_tx);
+                                active_session_id = Some(session_id.clone()); media = Some(started); local_stop = Some(stop_rx);
+                                send(&mut writer, &AgentMessage::SessionAccept { session_id: &session_id }).await?;
+                            }
+                            Err(error) => {
+                                warn!(%error, "Could not start screen sharing");
+                                send(&mut writer, &AgentMessage::SessionReject { session_id: &session_id, reason: "screen_capture_failed" }).await?;
+                            }
+                        }
+                    } else {
+                        send(&mut writer, &AgentMessage::SessionReject { session_id: &session_id, reason: "denied_by_remote_user" }).await?;
+                    }
+                }
+            }
+            event = async { match media.as_mut() { Some(media) => media.events.recv().await, None => pending().await } } => {
+                if let (Some(event), Some(session_id)) = (event, active_session_id.clone()) {
+                    match event {
+                        MediaEvent::Offer(sdp) => send(&mut writer, &AgentMessage::WebrtcOffer { session_id: &session_id, sdp: &sdp }).await?,
+                        MediaEvent::IceCandidate { candidate, sdp_mid, sdp_m_line_index } => send(&mut writer, &AgentMessage::IceCandidate { session_id: &session_id, candidate: &candidate, sdp_mid: sdp_mid.as_deref(), sdp_m_line_index }).await?,
+                        MediaEvent::Connected => info!(%session_id, "Screen viewer connected"),
+                        MediaEvent::Ended(reason) => {
+                            send(&mut writer, &AgentMessage::SessionEnd { session_id: &session_id, reason: &reason }).await?;
+                            media = None; active_session_id = None; local_stop = None;
+                        }
+                    }
+                }
+            }
+            _ = async { match local_stop.as_mut() { Some(stop) => { let _ = stop.await; }, None => pending().await } } => {
+                if let Some(session_id) = active_session_id.clone() {
+                    if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Stop).await; }
+                    send(&mut writer, &AgentMessage::SessionEnd { session_id: &session_id, reason: "stopped_by_remote_user" }).await?;
+                    media = None; active_session_id = None; local_stop = None;
                 }
             }
         }

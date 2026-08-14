@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 import type { FastifyBaseLogger } from "fastify";
 import WebSocket, { WebSocketServer } from "ws";
 import type { AppConfig } from "../config/env.js";
 import type { DeviceManager } from "../devices/device-manager.js";
+import type { SessionManager } from "../sessions/session-manager.js";
 import { agentMessageSchema, type ServerMessage } from "../types/protocol.js";
 
 function send(socket: WebSocket, message: ServerMessage): void {
@@ -19,6 +20,7 @@ export class AgentWebSocketServer {
     private readonly devices: DeviceManager,
     private readonly config: AppConfig,
     private readonly logger: FastifyBaseLogger,
+    private readonly sessions: SessionManager,
   ) {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: config.WS_MAX_PAYLOAD_BYTES });
 
@@ -31,8 +33,6 @@ export class AgentWebSocketServer {
         return;
       }
       if (pathname !== "/agent") {
-        socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-        socket.destroy();
         return;
       }
       this.wss.handleUpgrade(request, socket, head, (ws) => this.wss.emit("connection", ws, request));
@@ -46,6 +46,8 @@ export class AgentWebSocketServer {
   private handleConnection(socket: WebSocket): void {
     const connectionId = randomUUID();
     let deviceId: string | undefined;
+    let pendingRegistration: import("../types/protocol.js").RegisterMessage | undefined;
+    let challenge: string | undefined;
     const registrationTimer = setTimeout(() => {
       if (!deviceId) socket.close(1008, "Registration required");
     }, this.config.REGISTRATION_TIMEOUT_MS);
@@ -71,13 +73,42 @@ export class AgentWebSocketServer {
       }
 
       if (parsed.data.type === "register") {
-        if (deviceId) {
+        if (deviceId || pendingRegistration) {
           send(socket, { type: "error", code: "ALREADY_REGISTERED", message: "Connection is already registered" });
           return;
         }
-        deviceId = parsed.data.deviceId;
+        const savedKey = this.devices.publicKeyFor(parsed.data.deviceId);
+        if (savedKey && savedKey !== parsed.data.publicKey) {
+          send(socket, { type: "error", code: "DEVICE_KEY_MISMATCH", message: "Device credential does not match" });
+          socket.close(1008, "Device authentication failed");
+          return;
+        }
+        pendingRegistration = parsed.data;
+        challenge = randomBytes(32).toString("base64url");
+        send(socket, { type: "auth_challenge", nonce: challenge });
+        return;
+      }
+
+      if (parsed.data.type === "authenticate") {
+        if (!pendingRegistration || !challenge || deviceId) {
+          send(socket, { type: "error", code: "AUTH_NOT_PENDING", message: "Register before authenticating" });
+          return;
+        }
+        const rawKey = Buffer.from(pendingRegistration.publicKey, "base64");
+        const key = createPublicKey({
+          key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), rawKey]),
+          format: "der",
+          type: "spki",
+        });
+        const signed = Buffer.from(`${pendingRegistration.deviceId}:${challenge}`, "utf8");
+        if (!verify(null, signed, key, Buffer.from(parsed.data.signature, "base64"))) {
+          send(socket, { type: "error", code: "DEVICE_AUTH_FAILED", message: "Invalid device signature" });
+          socket.close(1008, "Device authentication failed");
+          return;
+        }
+        deviceId = pendingRegistration.deviceId;
         clearTimeout(registrationTimer);
-        const result = this.devices.register(parsed.data, socket, connectionId);
+        const result = this.devices.register(pendingRegistration, socket, connectionId, "admin");
         if (result.replacedSocket && result.replacedSocket !== socket) {
           this.logger.warn({ deviceId }, "Replacing duplicate device connection");
           result.replacedSocket.close(4001, "Replaced by newer connection");
@@ -85,8 +116,8 @@ export class AgentWebSocketServer {
         this.logger.info({
           event: "DEVICE_CONNECTED",
           deviceId,
-          deviceName: parsed.data.deviceName,
-          operatingSystem: parsed.data.operatingSystem,
+          deviceName: pendingRegistration.deviceName,
+          operatingSystem: pendingRegistration.operatingSystem,
         }, "Device connected");
         send(socket, { type: "registered", deviceId, status: "online" });
         return;
@@ -94,6 +125,10 @@ export class AgentWebSocketServer {
 
       if (!deviceId) {
         send(socket, { type: "error", code: "NOT_REGISTERED", message: "Register before sending heartbeats" });
+        return;
+      }
+      if (parsed.data.type !== "heartbeat") {
+        this.sessions.fromAgent(deviceId, parsed.data);
         return;
       }
       if (!this.devices.touch(deviceId, connectionId)) {
@@ -108,7 +143,10 @@ export class AgentWebSocketServer {
       clearTimeout(registrationTimer);
       if (!deviceId) return;
       const device = this.devices.markOffline(deviceId, connectionId);
-      if (device) this.logger.info({ event: "DEVICE_DISCONNECTED", deviceId, deviceName: device.deviceName, code }, "Device disconnected");
+      if (device) {
+        this.sessions.endForDevice(deviceId, "agent_disconnected");
+        this.logger.info({ event: "DEVICE_DISCONNECTED", deviceId, deviceName: device.deviceName, code }, "Device disconnected");
+      }
     });
 
     socket.on("error", (error) => this.logger.warn({ err: error, deviceId }, "Agent WebSocket error"));
