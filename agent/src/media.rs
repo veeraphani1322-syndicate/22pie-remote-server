@@ -1,5 +1,5 @@
 use crate::protocol::IceServer;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
@@ -32,7 +32,7 @@ pub struct MediaSession {
 
 #[cfg(not(windows))]
 pub async fn start(_ice_servers: Vec<IceServer>) -> Result<MediaSession> {
-    bail!("screen capture is supported only on Windows")
+    anyhow::bail!("screen capture is supported only on Windows")
 }
 
 #[cfg(windows)]
@@ -62,11 +62,12 @@ mod windows {
     use tokio::sync::mpsc;
     use webrtc::{
         api::{
-            interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
+            interceptor_registry::register_default_interceptors,
+            media_engine::{MediaEngine, MIME_TYPE_H264},
             APIBuilder,
         },
         ice_transport::{
-            ice_candidate::RTCIceCandidate, ice_candidate_init::RTCIceCandidateInit,
+            ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
             ice_server::RTCIceServer,
         },
         interceptor::registry::Registry,
@@ -75,7 +76,7 @@ mod windows {
             configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
             sdp::session_description::RTCSessionDescription,
         },
-        rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, MIME_TYPE_H264},
+        rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
         track::track_local::{track_local_static_sample::TrackLocalStaticSample, TrackLocal},
     };
 
