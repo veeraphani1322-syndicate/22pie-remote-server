@@ -14,11 +14,13 @@ export function deviceRoutes(deviceManager: DeviceManager, auth: AuthService, tr
       const user = await requireUser(request, auth);
       if (!user) return reply.code(401).send({ error: "Unauthorized" });
       const devices = deviceManager.list(user.userId).map((device) => {
-        const trust = trustedAccess.list(device.deviceId, user.userId, deviceManager.publicKeyFor(device.deviceId))[0];
+        const trusts = trustedAccess.list(device.deviceId, user.userId, deviceManager.publicKeyFor(device.deviceId));
+        const screenTrust = trusts.find((trust) => trust.permission === "SCREEN_VIEW");
+        const mouseTrust = trusts.find((trust) => trust.permission === "MOUSE_CONTROL");
         return {
           ...device,
-          trustedScreenAccess: Boolean(trust),
-          trustedAccess: trust ? { permission: trust.permission, createdAt: trust.createdAt, userEmail: user.email } : undefined,
+          trustedScreenAccess: Boolean(screenTrust), trustedMouseControl: Boolean(mouseTrust),
+          trustedAccess: screenTrust ? { permission: screenTrust.permission, createdAt: screenTrust.createdAt, userEmail: user.email } : undefined,
         };
       });
       return { count: devices.length, devices };
@@ -31,7 +33,7 @@ export function deviceRoutes(deviceManager: DeviceManager, auth: AuthService, tr
       if (!parsed.success) return reply.code(400).send({ error: "Invalid device ID" });
       const device = deviceManager.getOwned(parsed.data.deviceId, user.userId);
       if (!device) return reply.code(404).send({ error: "Device not found" });
-      return { ...device, trustedScreenAccess: trustedAccess.has(device.deviceId, user.userId, "SCREEN_VIEW", deviceManager.publicKeyFor(device.deviceId)) };
+      return { ...device, trustedScreenAccess: trustedAccess.has(device.deviceId, user.userId, "SCREEN_VIEW", deviceManager.publicKeyFor(device.deviceId)), trustedMouseControl: trustedAccess.has(device.deviceId, user.userId, "MOUSE_CONTROL", deviceManager.publicKeyFor(device.deviceId)) };
     });
 
     app.get("/devices/:deviceId/trusted-access", async (request, reply) => {
@@ -53,6 +55,19 @@ export function deviceRoutes(deviceManager: DeviceManager, auth: AuthService, tr
       const socket = deviceManager.socketFor(parsed.data.deviceId);
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "trust_revoked", userId: user.userId, permission: "SCREEN_VIEW" }));
       if (revoked) request.log.info({ event: "TRUST_REVOKED", deviceId: parsed.data.deviceId, userId: user.userId, permission: "SCREEN_VIEW" }, "Trusted access revoked from dashboard");
+      return reply.code(204).send();
+    });
+
+    app.delete("/devices/:deviceId/trusted-access/MOUSE_CONTROL", async (request, reply) => {
+      const user = await requireUser(request, auth);
+      if (!user) return reply.code(401).send({ error: "Unauthorized" });
+      const parsed = paramsSchema.safeParse(request.params);
+      if (!parsed.success) return reply.code(400).send({ error: "Invalid device ID" });
+      if (!deviceManager.getOwned(parsed.data.deviceId, user.userId)) return reply.code(404).send({ error: "Device not found" });
+      const revoked = trustedAccess.revoke(parsed.data.deviceId, user.userId, "MOUSE_CONTROL");
+      const socket = deviceManager.socketFor(parsed.data.deviceId);
+      if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "trust_revoked", userId: user.userId, permission: "MOUSE_CONTROL" }));
+      if (revoked) request.log.info({ event: "MOUSE_CONTROL_REVOKED", deviceId: parsed.data.deviceId, userId: user.userId }, "Mouse-control trust revoked");
       return reply.code(204).send();
     });
   };

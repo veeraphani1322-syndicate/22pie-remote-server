@@ -22,6 +22,7 @@ pub enum MediaCommand {
         sdp_mid: Option<String>,
         sdp_m_line_index: Option<u16>,
     },
+    SetMouseControl(bool),
     Stop,
 }
 
@@ -31,19 +32,22 @@ pub struct MediaSession {
 }
 
 #[cfg(not(windows))]
-pub async fn start(_ice_servers: Vec<IceServer>) -> Result<MediaSession> {
+pub async fn start(_ice_servers: Vec<IceServer>, _session_id: String) -> Result<MediaSession> {
     anyhow::bail!("screen capture is supported only on Windows")
 }
 
 #[cfg(windows)]
-pub async fn start(ice_servers: Vec<IceServer>) -> Result<MediaSession> {
-    windows::start(ice_servers).await
+pub async fn start(ice_servers: Vec<IceServer>, session_id: String) -> Result<MediaSession> {
+    windows::start(ice_servers, session_id).await
 }
 
 #[cfg(windows)]
 mod windows {
     use super::{MediaCommand, MediaEvent, MediaSession};
-    use crate::protocol::{IceServer, UrlList};
+    use crate::{
+        mouse::{MouseController, MouseMessage},
+        protocol::{IceServer, UrlList},
+    };
     use anyhow::{Context, Result};
     use bytes::Bytes;
     use fast_image_resize::{
@@ -63,18 +67,19 @@ mod windows {
         io::ErrorKind::WouldBlock,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc,
+            Arc, Mutex,
         },
         time::{Duration, Instant},
     };
     use tokio::sync::mpsc;
-    use tracing::{debug, info};
+    use tracing::{debug, info, warn};
     use webrtc::{
         api::{
             interceptor_registry::register_default_interceptors,
             media_engine::{MediaEngine, MIME_TYPE_H264},
             APIBuilder,
         },
+        data_channel::data_channel_message::DataChannelMessage,
         ice_transport::{
             ice_candidate::{RTCIceCandidate, RTCIceCandidateInit},
             ice_server::RTCIceServer,
@@ -89,7 +94,7 @@ mod windows {
         track::track_local::{track_local_static_sample::TrackLocalStaticSample, TrackLocal},
     };
 
-    pub async fn start(ice_servers: Vec<IceServer>) -> Result<MediaSession> {
+    pub async fn start(ice_servers: Vec<IceServer>, session_id: String) -> Result<MediaSession> {
         let media_started_at = Instant::now();
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs()?;
@@ -103,6 +108,52 @@ mod windows {
             ..Default::default()
         };
         let peer = Arc::new(api.new_peer_connection(configuration).await?);
+        let mouse_authorized = Arc::new(AtomicBool::new(false));
+        let mouse = Arc::new(Mutex::new(MouseController::new()));
+        let channel = peer.create_data_channel("control", None).await?;
+        let opened_at = Instant::now();
+        channel.on_open(Box::new(move || {
+            info!(
+                CONTROL_CHANNEL_OPEN_MS = opened_at.elapsed().as_millis(),
+                "Mouse control channel opened"
+            );
+            Box::pin(async {})
+        }));
+        let message_authorized = mouse_authorized.clone();
+        let message_controller = mouse.clone();
+        channel.on_message(Box::new(move |data: DataChannelMessage| {
+            let authorized = message_authorized.clone();
+            let controller = message_controller.clone();
+            let expected_session_id = session_id.clone();
+            Box::pin(async move {
+                if !data.is_string || !authorized.load(Ordering::Acquire) {
+                    return;
+                }
+                let Some(message) = MouseMessage::parse(&data.data) else {
+                    return;
+                };
+                if message.session_id() != expected_session_id {
+                    return;
+                }
+                let success = controller
+                    .lock()
+                    .map(|mut mouse| mouse.execute(message))
+                    .unwrap_or(false);
+                if !success {
+                    warn!(
+                        SENDINPUT_FAILURES = 1,
+                        "Windows SendInput rejected mouse event"
+                    );
+                }
+            })
+        }));
+        let close_controller = mouse.clone();
+        channel.on_close(Box::new(move || {
+            if let Ok(mut mouse) = close_controller.lock() {
+                mouse.release_all();
+            }
+            Box::pin(async {})
+        }));
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_H264.to_owned(),
@@ -206,8 +257,21 @@ mod windows {
                             })
                             .await
                     }
+                    MediaCommand::SetMouseControl(enabled) => {
+                        mouse_authorized.store(enabled, Ordering::Release);
+                        if !enabled {
+                            if let Ok(mut controller) = mouse.lock() {
+                                controller.release_all();
+                            }
+                        }
+                        Ok(())
+                    }
                     MediaCommand::Stop => {
                         stopped.store(true, Ordering::SeqCst);
+                        mouse_authorized.store(false, Ordering::Release);
+                        if let Ok(mut controller) = mouse.lock() {
+                            controller.release_all();
+                        }
                         let _ = command_peer.close().await;
                         break;
                     }

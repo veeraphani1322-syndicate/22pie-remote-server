@@ -24,5 +24,10 @@ test("accepts device-originated permission-specific trust messages", () => {
   }).success, true);
   assert.equal(agentMessageSchema.safeParse({
     type: "trust_grant", sessionId: "4f63cc0c-f1f9-4e4f-9f56-ced4e345d813", permission: "MOUSE_CONTROL",
-  }).success, false);
+  }).success, true);
+});
+
+test("accepts mouse authorization results but rejects unknown control messages", () => {
+  assert.equal(agentMessageSchema.safeParse({ type: "mouse_control_accept", sessionId: "4f63cc0c-f1f9-4e4f-9f56-ced4e345d813" }).success, true);
+  assert.equal(agentMessageSchema.safeParse({ type: "mouse_control_accept", sessionId: "bad" }).success, false);
 });

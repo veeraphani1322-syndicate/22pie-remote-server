@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-export type TrustedPermission = "SCREEN_VIEW";
+export type TrustedPermission = "SCREEN_VIEW" | "MOUSE_CONTROL";
 
 export interface TrustedAccessRecord {
   trustId: string;

@@ -63,6 +63,15 @@ pub enum AgentMessage<'a> {
         session_id: &'a str,
         reason: &'a str,
     },
+    MouseControlAccept {
+        #[serde(rename = "sessionId")]
+        session_id: &'a str,
+    },
+    MouseControlReject {
+        #[serde(rename = "sessionId")]
+        session_id: &'a str,
+        reason: &'a str,
+    },
 }
 
 impl<'a> AgentMessage<'a> {
@@ -122,6 +131,23 @@ pub enum ServerMessage {
         session_id: String,
         reason: String,
     },
+    MouseControlRequested {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "viewerUserId")]
+        viewer_user_id: String,
+        #[serde(rename = "viewerName")]
+        viewer_name: String,
+        trusted: bool,
+    },
+    MouseControlDisabled {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
+    MouseControlEnabled {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
     TrustRevoked {
         #[serde(rename = "userId")]
         user_id: String,
@@ -137,6 +163,7 @@ pub enum ServerMessage {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Permission {
     ScreenView,
+    MouseControl,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -5,6 +5,7 @@ use std::{fs, path::PathBuf};
 use uuid::Uuid;
 
 const SCREEN_VIEW: &str = "SCREEN_VIEW";
+const MOUSE_CONTROL: &str = "MOUSE_CONTROL";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +78,65 @@ impl TrustedAccess {
             self.save()?;
         }
         Ok(())
+    }
+
+    pub fn has_mouse_control(&self, server_url: &str, user_id: &str) -> bool {
+        self.has_permission(server_url, user_id, MOUSE_CONTROL)
+    }
+
+    pub fn grant_mouse_control(
+        &mut self,
+        server_url: &str,
+        user_id: &str,
+        viewer_name: &str,
+    ) -> Result<()> {
+        self.grant_permission(server_url, user_id, viewer_name, MOUSE_CONTROL)
+    }
+
+    pub fn revoke_mouse_control(&mut self, server_url: &str, user_id: &str) -> Result<()> {
+        self.revoke_permission(server_url, user_id, MOUSE_CONTROL)
+    }
+
+    fn has_permission(&self, server_url: &str, user_id: &str, permission: &str) -> bool {
+        self.stored.grants.iter().any(|grant| {
+            grant.server_url == server_url
+                && grant.user_id == user_id
+                && grant.permission == permission
+        })
+    }
+
+    fn grant_permission(
+        &mut self,
+        server_url: &str,
+        user_id: &str,
+        viewer_name: &str,
+        permission: &str,
+    ) -> Result<()> {
+        if !self.has_permission(server_url, user_id, permission) {
+            self.stored.grants.push(LocalTrust {
+                server_url: server_url.to_owned(),
+                user_id: user_id.to_owned(),
+                viewer_name: viewer_name.to_owned(),
+                permission: permission.to_owned(),
+                created_at: now_string(),
+            });
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    fn revoke_permission(
+        &mut self,
+        server_url: &str,
+        user_id: &str,
+        permission: &str,
+    ) -> Result<()> {
+        self.stored.grants.retain(|grant| {
+            !(grant.server_url == server_url
+                && grant.user_id == user_id
+                && grant.permission == permission)
+        });
+        self.save()
     }
 
     pub fn revoke_screen_view(&mut self, server_url: &str, user_id: &str) -> Result<()> {

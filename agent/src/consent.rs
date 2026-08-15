@@ -24,7 +24,13 @@ fn decision_from_button(button: i32) -> ConsentDecision {
 }
 
 pub async fn request_screen_view(viewer_name: String, device_name: String) -> ConsentDecision {
-    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name))
+    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, false))
+        .await
+        .unwrap_or(ConsentDecision::Deny)
+}
+
+pub async fn request_mouse_control(viewer_name: String, device_name: String) -> ConsentDecision {
+    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, true))
         .await
         .unwrap_or(ConsentDecision::Deny)
 }
@@ -45,13 +51,17 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn prompt(viewer_name: &str, device_name: &str) -> ConsentDecision {
-    try_task_dialog(viewer_name, device_name)
-        .unwrap_or_else(|| fallback_consent_window(viewer_name, device_name))
+fn prompt(viewer_name: &str, device_name: &str, mouse_control: bool) -> ConsentDecision {
+    try_task_dialog(viewer_name, device_name, mouse_control)
+        .unwrap_or_else(|| fallback_consent_window(viewer_name, device_name, mouse_control))
 }
 
 #[cfg(windows)]
-fn try_task_dialog(viewer_name: &str, device_name: &str) -> Option<ConsentDecision> {
+fn try_task_dialog(
+    viewer_name: &str,
+    device_name: &str,
+    mouse_control: bool,
+) -> Option<ConsentDecision> {
     use windows_sys::Win32::Foundation::FreeLibrary;
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     use windows_sys::Win32::UI::Controls::{
@@ -75,14 +85,23 @@ fn try_task_dialog(viewer_name: &str, device_name: &str) -> Option<ConsentDecisi
 
     let title = wide("22Pie Remote");
     let instruction = wide(&format!(
-        "{viewer_name} is requesting access to this computer."
+        "{viewer_name} is requesting {}.",
+        if mouse_control {
+            "remote mouse control"
+        } else {
+            "access to this computer"
+        }
     ));
     let content = wide(&format!(
-        "Computer: {device_name}\n\nRequested permission:\nScreen viewing"
+        "Computer: {device_name}\n\nRequested permissions:\nScreen viewing{}",
+        if mouse_control { "\nMouse control" } else { "" }
     ));
     let allow = wide("Allow Once\nAllow screen viewing for only this session.");
-    let trust =
-        wide("Trust This Account\nAllow now and future screen-view sessions until revoked.");
+    let trust = wide(if mouse_control {
+        "Trust These Permissions\nAllow mouse control now and in future sessions until revoked."
+    } else {
+        "Trust This Account\nAllow now and future screen-view sessions until revoked."
+    });
     let deny = wide("Deny\nDo not allow this session or save authorization.");
     let buttons = [
         TASKDIALOG_BUTTON {
@@ -124,7 +143,11 @@ fn try_task_dialog(viewer_name: &str, device_name: &str) -> Option<ConsentDecisi
 }
 
 #[cfg(windows)]
-fn fallback_consent_window(viewer_name: &str, device_name: &str) -> ConsentDecision {
+fn fallback_consent_window(
+    viewer_name: &str,
+    device_name: &str,
+    mouse_control: bool,
+) -> ConsentDecision {
     use std::ffi::c_void;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::UpdateWindow;
@@ -229,9 +252,7 @@ fn fallback_consent_window(viewer_name: &str, device_name: &str) -> ConsentDecis
     unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, (&mut selected as *mut i32) as isize) };
     let static_class = wide("STATIC");
     let button_class = wide("BUTTON");
-    let message = wide(&format!(
-        "{viewer_name} is requesting access to this computer.\n\nComputer: {device_name}\nRequested permission: Screen viewing"
-    ));
+    let message = wide(&format!("{viewer_name} is requesting {}.\n\nComputer: {device_name}\nRequested permissions: Screen viewing{}", if mouse_control { "remote mouse control" } else { "access to this computer" }, if mouse_control { ", Mouse control" } else { "" }));
     unsafe {
         child(&static_class, &message, 0, 20, 18, 510, 100, window, 0);
         child(
@@ -247,7 +268,11 @@ fn fallback_consent_window(viewer_name: &str, device_name: &str) -> ConsentDecis
         );
         child(
             &button_class,
-            &wide("Trust This Account"),
+            &wide(if mouse_control {
+                "Trust These Permissions"
+            } else {
+                "Trust This Account"
+            }),
             BS_PUSHBUTTON as u32,
             190,
             145,
@@ -283,7 +308,7 @@ fn fallback_consent_window(viewer_name: &str, device_name: &str) -> ConsentDecis
 }
 
 #[cfg(not(windows))]
-fn prompt(_viewer_name: &str, _device_name: &str) -> ConsentDecision {
+fn prompt(_viewer_name: &str, _device_name: &str, _mouse_control: bool) -> ConsentDecision {
     ConsentDecision::Deny
 }
 
@@ -334,6 +359,31 @@ pub fn show_sharing_indicator(stop: tokio::sync::oneshot::Sender<()>) {
         }
         let _ = stop.send(());
     });
+}
+
+#[cfg(windows)]
+pub fn show_mouse_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
+    std::thread::spawn(move || {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
+        };
+        let title = wide("22Pie Remote — Mouse control active");
+        let message = wide("Your screen is being shared and remotely controlled.\n\nSelect OK to stop remote mouse control. Screen viewing will continue.");
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+            );
+        }
+        let _ = stop.send(());
+    });
+}
+
+#[cfg(not(windows))]
+pub fn show_mouse_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
+    let _ = stop.send(());
 }
 
 #[cfg(test)]

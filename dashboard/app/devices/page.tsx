@@ -9,6 +9,7 @@ interface Device {
   deviceId: string; deviceName: string; operatingSystem: string; agentVersion: string;
   status: "online" | "offline"; lastSeenAt: string;
   trustedScreenAccess: boolean;
+  trustedMouseControl: boolean;
   trustedAccess?: { permission: "SCREEN_VIEW"; createdAt: string; userEmail: string };
 }
 type PageState = "loading" | "ready" | "unauthorized" | "unavailable";
@@ -59,6 +60,11 @@ export default function DevicesPage() {
     await api(`/api/devices/${deviceId}/trusted-access/SCREEN_VIEW`, { method: "DELETE" });
     setDevices((current) => current.map((device) => device.deviceId === deviceId ? { ...device, trustedScreenAccess: false } : device));
   }
+  async function revokeMouseTrust(deviceId: string) {
+    if (!window.confirm("Revoke trusted mouse control? Screen-view trust will remain unchanged.")) return;
+    await api(`/api/devices/${deviceId}/trusted-access/MOUSE_CONTROL`, { method: "DELETE" });
+    setDevices((current) => current.map((device) => device.deviceId === deviceId ? { ...device, trustedMouseControl: false } : device));
+  }
 
   return <main className="shell"><header><div className="brand">22Pie <span>Remote</span></div><div className="header-actions"><div className="secure">● Secure console</div><button className="text-button" onClick={() => void logout()}>Sign out</button></div></header>
     <section className="page-heading"><p className="eyebrow">Workspace</p><h1>My devices</h1><p>Screen viewing requires approval once unless this account has trusted access.</p></section>
@@ -70,6 +76,7 @@ export default function DevicesPage() {
       <div className="device-icon">▣</div><div><h2>{device.deviceName}</h2><p>{device.operatingSystem}</p><p>Agent {device.agentVersion}</p></div>
       <div className={`status ${device.status}`}><i />{device.status === "online" ? "Online" : "Offline"}</div>
       {device.trustedScreenAccess && <div><p>Trusted Screen Access ✓</p><p>Trusted for: {device.trustedAccess?.userEmail}</p><p>Granted: {device.trustedAccess ? new Date(device.trustedAccess.createdAt).toLocaleString() : "—"}</p><button className="text-button" onClick={() => void revokeTrust(device.deviceId)}>Revoke</button></div>}
+      {device.trustedMouseControl && <div><p>Trusted Mouse Control ✓</p><button className="text-button" onClick={() => void revokeMouseTrust(device.deviceId)}>Revoke Mouse Trust</button></div>}
       {device.status === "online" ? <Link className="action" href={`/devices/${device.deviceId}/view`}>View screen</Link> : <span className="action disabled">View screen</span>}
     </article>)}</div>}
   </main>;

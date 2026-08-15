@@ -36,5 +36,24 @@ export function sessionRoutes(
       if (!session) return reply.code(404).send({ error: "Session not found" });
       return { session, iceServers };
     });
+
+    app.post("/sessions/:sessionId/mouse-control", async (request, reply) => {
+      const user = await requireUser(request, auth);
+      if (!user) return reply.code(401).send({ error: "Unauthorized" });
+      const parsed = sessionParams.safeParse(request.params);
+      if (!parsed.success) return reply.code(400).send({ error: "Invalid session ID" });
+      const session = sessions.requestMouseControl(parsed.data.sessionId, user.userId, user.email);
+      if (!session) return reply.code(409).send({ error: "Session is not active" });
+      return reply.code(202).send({ session });
+    });
+
+    app.delete("/sessions/:sessionId/mouse-control", async (request, reply) => {
+      const user = await requireUser(request, auth);
+      if (!user) return reply.code(401).send({ error: "Unauthorized" });
+      const parsed = sessionParams.safeParse(request.params);
+      if (!parsed.success) return reply.code(400).send({ error: "Invalid session ID" });
+      if (!sessions.disableMouseControl(parsed.data.sessionId, user.userId)) return reply.code(404).send({ error: "Session not found" });
+      return reply.code(204).send();
+    });
   };
 }

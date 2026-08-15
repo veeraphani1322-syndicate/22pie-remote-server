@@ -11,7 +11,7 @@ export interface SessionView {
   userId: string;
   deviceId: string;
   status: SessionStatus;
-  permissions: ["SCREEN_VIEW"];
+  permissions: Array<"SCREEN_VIEW" | "MOUSE_CONTROL">;
   requestedAt: string;
   acceptedAt?: string;
   connectedAt?: string;
@@ -90,12 +90,24 @@ export class SessionManager {
     if (!("sessionId" in message)) return;
     const session = this.sessions.get(message.sessionId);
     if (!session || session.deviceId !== deviceId) return;
-    if (message.type === "trust_grant" && session.status === "requested" && message.permission === "SCREEN_VIEW") {
+    if (message.type === "trust_grant" && (session.status === "requested" || (message.permission === "MOUSE_CONTROL" && ["accepted", "connecting", "connected"].includes(session.status)))) {
       const devicePublicKey = this.devices.publicKeyFor(deviceId);
       if (!devicePublicKey) return;
       this.trustedAccess.grant(deviceId, session.userId, message.permission, devicePublicKey);
       session.trusted = true;
       this.audit({ event: "TRUST_GRANTED", deviceId, userId: session.userId, permission: message.permission }, "Trusted access granted by device");
+      return;
+    }
+    if (message.type === "mouse_control_accept" && ["accepted", "connecting", "connected"].includes(session.status)) {
+      if (!session.permissions.includes("MOUSE_CONTROL")) session.permissions.push("MOUSE_CONTROL");
+      send(session.viewer, { type: "mouse_control_authorized", sessionId: session.sessionId });
+      this.audit({ event: "MOUSE_CONTROL_ENABLED", sessionId: session.sessionId, deviceId, userId: session.userId }, "Mouse control authorized");
+      return;
+    }
+    if (message.type === "mouse_control_reject") {
+      session.permissions = session.permissions.filter((permission) => permission !== "MOUSE_CONTROL");
+      send(session.viewer, { type: "mouse_control_rejected", sessionId: session.sessionId, reason: message.reason ?? "denied_by_remote_user" });
+      this.audit({ event: "MOUSE_CONTROL_DENIED", sessionId: session.sessionId, deviceId, userId: session.userId }, "Mouse control denied");
       return;
     }
     if (message.type === "session_accept" && session.status === "requested") {
@@ -146,6 +158,31 @@ export class SessionManager {
     clearTimeout(session.timeout);
     session.status = "connected";
     session.connectedAt = new Date().toISOString();
+  }
+
+  requestMouseControl(sessionId: string, userId: string, viewerName: string): SessionView | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.userId !== userId || !["accepted", "connecting", "connected"].includes(session.status)) return undefined;
+    if (session.permissions.includes("MOUSE_CONTROL")) {
+      send(this.devices.socketFor(session.deviceId), { type: "mouse_control_enabled", sessionId });
+      send(session.viewer, { type: "mouse_control_authorized", sessionId });
+      return this.view(session);
+    }
+    const trusted = this.trustedAccess.has(session.deviceId, userId, "MOUSE_CONTROL", this.devices.publicKeyFor(session.deviceId));
+    const agent = this.devices.socketFor(session.deviceId);
+    if (!agent) return undefined;
+    this.audit({ event: "MOUSE_CONTROL_REQUESTED", sessionId, deviceId: session.deviceId, userId }, "Mouse control requested");
+    send(agent, { type: "mouse_control_requested", sessionId, viewerUserId: userId, viewerName, trusted });
+    return this.view(session);
+  }
+
+  disableMouseControl(sessionId: string, userId: string): SessionView | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.userId !== userId) return undefined;
+    send(this.devices.socketFor(session.deviceId), { type: "mouse_control_disabled", sessionId });
+    send(session.viewer, { type: "mouse_control_disabled", sessionId });
+    this.audit({ event: "MOUSE_CONTROL_DISABLED", sessionId, deviceId: session.deviceId, userId }, "Mouse control disabled");
+    return this.view(session);
   }
 
   endForDevice(deviceId: string, reason: string): void {

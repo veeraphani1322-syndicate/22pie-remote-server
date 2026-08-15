@@ -158,7 +158,11 @@ where
             &mut writer,
             &AgentMessage::TrustRevoke {
                 user_id: &revoked.user_id,
-                permission: crate::protocol::Permission::ScreenView,
+                permission: if revoked.permission == "MOUSE_CONTROL" {
+                    crate::protocol::Permission::MouseControl
+                } else {
+                    crate::protocol::Permission::ScreenView
+                },
             },
         )
         .await?;
@@ -184,6 +188,10 @@ where
     let mut media: Option<MediaSession> = None;
     let mut active_session_id: Option<String> = None;
     let mut local_stop: Option<tokio::sync::oneshot::Receiver<()>> = None;
+    let mut local_mouse_stop: Option<tokio::sync::oneshot::Receiver<()>> = None;
+    let (mouse_consent_tx, mut mouse_consent_rx) =
+        mpsc::channel::<(String, String, String, ConsentDecision)>(1);
+    let mut mouse_consent_pending: Option<String> = None;
     let (review_tx, mut review_rx) = mpsc::channel(1);
     let mut review_pending = false;
     let mut local_commands_open = true;
@@ -214,7 +222,7 @@ where
                     trusted_access.revoke_all_locally()?;
                     let revoked = trusted_access.pending_revocations_for(&config.server_url);
                     for record in &revoked {
-                        send(&mut writer, &AgentMessage::TrustRevoke { user_id: &record.user_id, permission: crate::protocol::Permission::ScreenView }).await?;
+                        send(&mut writer, &AgentMessage::TrustRevoke { user_id: &record.user_id, permission: if record.permission == "MOUSE_CONTROL" { crate::protocol::Permission::MouseControl } else { crate::protocol::Permission::ScreenView } }).await?;
                     }
                     trusted_access.clear_pending_revocations_for(&config.server_url)?;
                     info!(count = revoked.len(), "Trusted screen access revoked locally");
@@ -255,10 +263,41 @@ where
                             }
                         }
                     }
+                    IncomingMessage::Protocol(ServerMessage::MouseControlRequested { session_id, viewer_user_id, viewer_name, trusted }) => {
+                        if active_session_id.as_deref() != Some(&session_id) || mouse_consent_pending.is_some() {
+                            send(&mut writer, &AgentMessage::MouseControlReject { session_id: &session_id, reason: "session_not_available" }).await?;
+                        } else if trusted && trusted_access.has_mouse_control(&config.server_url, &viewer_user_id) {
+                            if let Some(media) = &media { let _ = media.commands.send(MediaCommand::SetMouseControl(true)).await; }
+                            let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+                            crate::consent::show_mouse_control_indicator(stop_tx);
+                            local_mouse_stop = Some(stop_rx);
+                            send(&mut writer, &AgentMessage::MouseControlAccept { session_id: &session_id }).await?;
+                        } else {
+                            mouse_consent_pending = Some(session_id.clone());
+                            let tx = mouse_consent_tx.clone();
+                            let device_name = device.device_name.clone();
+                            tokio::spawn(async move {
+                                let decision = crate::consent::request_mouse_control(viewer_name.clone(), device_name).await;
+                                let _ = tx.send((session_id, viewer_user_id, viewer_name, decision)).await;
+                            });
+                        }
+                    }
+                    IncomingMessage::Protocol(ServerMessage::MouseControlDisabled { session_id }) => {
+                        if active_session_id.as_deref() == Some(&session_id) {
+                            if let Some(media) = &media { let _ = media.commands.send(MediaCommand::SetMouseControl(false)).await; }
+                            local_mouse_stop = None;
+                        }
+                    }
+                    IncomingMessage::Protocol(ServerMessage::MouseControlEnabled { session_id }) => {
+                        if active_session_id.as_deref() == Some(&session_id) {
+                            if let Some(media) = &media { let _ = media.commands.send(MediaCommand::SetMouseControl(true)).await; }
+                        }
+                    }
                     IncomingMessage::Protocol(ServerMessage::WebrtcAnswer { session_id, sdp }) => {
                         if active_session_id.as_deref() == Some(&session_id) {
                             if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Answer(sdp)).await; }
                         }
+                        if mouse_consent_pending.as_deref() == Some(&session_id) { mouse_consent_pending = None; }
                     }
                     IncomingMessage::Protocol(ServerMessage::IceCandidate { session_id, candidate, sdp_mid, sdp_m_line_index }) => {
                         if active_session_id.as_deref() == Some(&session_id) {
@@ -273,13 +312,17 @@ where
                         }
                         if active_session_id.as_deref() == Some(&session_id) {
                             if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Stop).await; }
-                            media = None; active_session_id = None; local_stop = None;
+                            media = None; active_session_id = None; local_stop = None; local_mouse_stop = None;
                             info!(%session_id, %reason, "Screen sharing ended");
                         }
                     }
                     IncomingMessage::Protocol(ServerMessage::TrustRevoked { user_id, permission: crate::protocol::Permission::ScreenView }) => {
                         trusted_access.revoke_screen_view(&config.server_url, &user_id)?;
                         info!(%user_id, "Local screen-view trust revoked by server");
+                    }
+                    IncomingMessage::Protocol(ServerMessage::TrustRevoked { user_id, permission: crate::protocol::Permission::MouseControl }) => {
+                        trusted_access.revoke_mouse_control(&config.server_url, &user_id)?;
+                        info!(%user_id, "Local mouse-control trust revoked by server");
                     }
                     IncomingMessage::Protocol(other) => debug!(?other, "Ignoring unexpected server message"),
                     IncomingMessage::ControlFrame => {}
@@ -302,7 +345,7 @@ where
                             send(&mut writer, &AgentMessage::TrustGrant { session_id: &session_id, permission: crate::protocol::Permission::ScreenView }).await?;
                         }
                         let media_started_at = Instant::now();
-                        match crate::media::start(ice_servers).await {
+                        match crate::media::start(ice_servers, session_id.clone()).await {
                             Ok(started) => {
                                 debug!(MEDIA_STARTUP_MS = media_started_at.elapsed().as_millis(), %session_id, "Screen media initialized");
                                 let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
@@ -320,6 +363,25 @@ where
                     }
                 }
             }
+            consent = mouse_consent_rx.recv() => {
+                if let Some((session_id, viewer_user_id, viewer_name, decision)) = consent {
+                    if mouse_consent_pending.as_deref() != Some(&session_id) { continue; }
+                    mouse_consent_pending = None;
+                    if decision == ConsentDecision::Deny {
+                        send(&mut writer, &AgentMessage::MouseControlReject { session_id: &session_id, reason: "denied_by_remote_user" }).await?;
+                    } else if active_session_id.as_deref() == Some(&session_id) {
+                        if decision == ConsentDecision::TrustAccount {
+                            trusted_access.grant_mouse_control(&config.server_url, &viewer_user_id, &viewer_name)?;
+                            send(&mut writer, &AgentMessage::TrustGrant { session_id: &session_id, permission: crate::protocol::Permission::MouseControl }).await?;
+                        }
+                        if let Some(media) = &media { let _ = media.commands.send(MediaCommand::SetMouseControl(true)).await; }
+                        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+                        crate::consent::show_mouse_control_indicator(stop_tx);
+                        local_mouse_stop = Some(stop_rx);
+                        send(&mut writer, &AgentMessage::MouseControlAccept { session_id: &session_id }).await?;
+                    }
+                }
+            }
             event = async { match media.as_mut() { Some(media) => media.events.recv().await, None => pending().await } } => {
                 if let (Some(event), Some(session_id)) = (event, active_session_id.clone()) {
                     match event {
@@ -328,7 +390,7 @@ where
                         MediaEvent::Connected => info!(%session_id, "Screen viewer connected"),
                         MediaEvent::Ended(reason) => {
                             send(&mut writer, &AgentMessage::SessionEnd { session_id: &session_id, reason: &reason }).await?;
-                            media = None; active_session_id = None; local_stop = None;
+                            media = None; active_session_id = None; local_stop = None; local_mouse_stop = None;
                         }
                     }
                 }
@@ -337,7 +399,14 @@ where
                 if let Some(session_id) = active_session_id.clone() {
                     if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Stop).await; }
                     send(&mut writer, &AgentMessage::SessionEnd { session_id: &session_id, reason: "stopped_by_remote_user" }).await?;
-                    media = None; active_session_id = None; local_stop = None;
+                    media = None; active_session_id = None; local_stop = None; local_mouse_stop = None;
+                }
+            }
+            _ = async { match local_mouse_stop.as_mut() { Some(stop) => { let _ = stop.await; }, None => pending().await } } => {
+                local_mouse_stop = None;
+                if let Some(session_id) = active_session_id.clone() {
+                    if let Some(media) = &media { let _ = media.commands.send(MediaCommand::SetMouseControl(false)).await; }
+                    send(&mut writer, &AgentMessage::MouseControlReject { session_id: &session_id, reason: "stopped_by_remote_user" }).await?;
                 }
             }
         }

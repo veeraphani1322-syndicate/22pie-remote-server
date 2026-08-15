@@ -102,3 +102,22 @@ test("a new session can be requested after the previous viewer disconnects", () 
   assert.equal(second.status, "requested");
   sessions.end(second.sessionId, "test_cleanup");
 });
+
+test("mouse control is separately authorized and can be downgraded without ending video", () => {
+  const { agent, sessions, trust } = fixture();
+  const viewer = fakeSocket();
+  const session = sessions.request("user-a", "device-a", "Viewer");
+  sessions.attachViewer(session.sessionId, "user-a", viewer);
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: session.sessionId });
+  sessions.markConnected(session.sessionId, "user-a");
+  sessions.requestMouseControl(session.sessionId, "user-a", "Viewer");
+  assert.deepEqual(agent.messages.at(-1), { type: "mouse_control_requested", sessionId: session.sessionId, viewerUserId: "user-a", viewerName: "Viewer", trusted: false });
+  sessions.fromAgent("device-a", { type: "trust_grant", sessionId: session.sessionId, permission: "MOUSE_CONTROL" });
+  sessions.fromAgent("device-a", { type: "mouse_control_accept", sessionId: session.sessionId });
+  assert.deepEqual(sessions.getOwned(session.sessionId, "user-a")?.permissions, ["SCREEN_VIEW", "MOUSE_CONTROL"]);
+  assert.equal(trust.has("device-a", "user-a", "MOUSE_CONTROL", "test-device-key"), true);
+  sessions.disableMouseControl(session.sessionId, "user-a");
+  assert.deepEqual(sessions.getOwned(session.sessionId, "user-a")?.permissions, ["SCREEN_VIEW", "MOUSE_CONTROL"]);
+  assert.equal(sessions.getOwned(session.sessionId, "user-a")?.status, "connected");
+  sessions.end(session.sessionId, "test_cleanup");
+});

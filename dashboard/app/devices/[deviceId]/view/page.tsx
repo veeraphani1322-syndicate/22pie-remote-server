@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { use, useEffect, useRef, useState } from "react";
 import { api, WS_URL } from "@/lib/api";
+import { normalizedVideoPoint, type Point } from "@/lib/mouse-control";
 
 type ViewState = "requesting" | "awaiting" | "starting" | "negotiating" | "waiting_frame" | "streaming" | "rejected" | "ended" | "failed";
 interface Device { deviceId: string; deviceName: string; operatingSystem: string }
@@ -13,11 +14,20 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const channelRef = useRef<RTCDataChannel | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const moveRef = useRef<Point | null>(null);
+  const moveFrameRef = useRef<number | null>(null);
+  const sequenceRef = useRef(0);
   const peerConnectedAtRef = useRef(0);
   const [device, setDevice] = useState<Device | null>(null);
   const [state, setState] = useState<ViewState>("requesting");
   const [stats, setStats] = useState({ resolution: "—", fps: "—", bitrate: "—", networkRtt: "—", packetLoss: "—", route: "—", protocol: "—" });
   const [error, setError] = useState("");
+  const [mouseAuthorized, setMouseAuthorized] = useState(false);
+  const [mouseEnabled, setMouseEnabled] = useState(false);
+  const [mouseRequesting, setMouseRequesting] = useState(false);
+  const [controlChannel, setControlChannel] = useState<"connecting" | "connected" | "disconnected">("connecting");
 
   useEffect(() => {
     let active = true;
@@ -35,11 +45,19 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
         setDevice(deviceResult); setState(created.session.trusted ? "starting" : "awaiting");
         console.debug(`SESSION_REQUEST_MS=${(performance.now() - requestStartedAt).toFixed(1)}`);
         const sessionId = created.session.sessionId;
+        sessionIdRef.current = sessionId;
         const peer = new RTCPeerConnection({ iceServers: created.iceServers });
         peerRef.current = peer;
         const socket = new WebSocket(`${WS_URL}/viewer?sessionId=${encodeURIComponent(sessionId)}`);
         socketRef.current = socket;
         peer.ontrack = ({ streams }) => { if (videoRef.current && streams[0]) videoRef.current.srcObject = streams[0]; };
+        peer.ondatachannel = ({ channel }) => {
+          if (channel.label !== "control") { channel.close(); return; }
+          channelRef.current = channel;
+          channel.onopen = () => setControlChannel("connected");
+          channel.onclose = () => { setControlChannel("disconnected"); setMouseEnabled(false); };
+          channel.onerror = () => { setControlChannel("disconnected"); setMouseEnabled(false); };
+        };
         peer.onicecandidate = ({ candidate }) => {
           if (candidate && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ice_candidate", sessionId, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex }));
         };
@@ -64,6 +82,9 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
           if (message.type === "session_accepted") setState("starting");
           if (message.type === "session_rejected") { setState("rejected"); setError(String(message.reason ?? "The remote user denied the request.")); }
           if (message.type === "session_ended") { setState("ended"); setError(String(message.reason ?? "Session ended")); peer.close(); }
+          if (message.type === "mouse_control_authorized") { setMouseAuthorized(true); setMouseEnabled(true); setMouseRequesting(false); }
+          if (message.type === "mouse_control_rejected") { setMouseAuthorized(false); setMouseEnabled(false); setMouseRequesting(false); setError(String(message.reason ?? "Mouse control denied")); }
+          if (message.type === "mouse_control_disabled") { setMouseEnabled(false); }
           if (message.type === "webrtc_offer") {
             setState("negotiating");
             await peer.setRemoteDescription({ type: "offer", sdp: String(message.sdp) });
@@ -98,7 +119,7 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
       } catch (reason) { setState("failed"); setError(reason instanceof Error ? reason.message : "Unable to start session"); }
     };
     void start();
-    return () => { active = false; if (statsTimer) window.clearInterval(statsTimer); const socket = socketRef.current; if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_end", sessionId: new URL(socket.url).searchParams.get("sessionId"), reason: "viewer_left" })); socket?.close(); peerRef.current?.close(); };
+    return () => { active = false; if (statsTimer) window.clearInterval(statsTimer); if (moveFrameRef.current != null) cancelAnimationFrame(moveFrameRef.current); channelRef.current?.close(); const socket = socketRef.current; if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_end", sessionId: new URL(socket.url).searchParams.get("sessionId"), reason: "viewer_left" })); socket?.close(); peerRef.current?.close(); };
   }, [deviceId]);
 
   async function fullscreen() { await videoRef.current?.requestFullscreen(); }
@@ -110,9 +131,31 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   }
   function disconnect() { const socket = socketRef.current; const sessionId = socket ? new URL(socket.url).searchParams.get("sessionId") : null; if (socket?.readyState === WebSocket.OPEN && sessionId) socket.send(JSON.stringify({ type: "session_end", sessionId, reason: "viewer_disconnected" })); peerRef.current?.close(); socket?.close(); setState("ended"); }
 
+  function sendMouse(type: string, fields: Record<string, unknown>, move = false) {
+    const channel = channelRef.current; const sessionId = sessionIdRef.current;
+    if (!mouseEnabled || !mouseAuthorized || !sessionId || channel?.readyState !== "open") return;
+    if (move && channel.bufferedAmount > 64 * 1024) return;
+    channel.send(JSON.stringify({ type, session_id: sessionId, ...fields, sequence: ++sequenceRef.current, timestamp: performance.now() }));
+  }
+  function pointer(event: React.MouseEvent<HTMLVideoElement>) { const video = videoRef.current; return video ? normalizedVideoPoint(event.clientX, event.clientY, video.getBoundingClientRect(), video.videoWidth, video.videoHeight) : null; }
+  function mouseMove(event: React.MouseEvent<HTMLVideoElement>) {
+    const point = pointer(event); if (!point) return; moveRef.current = point;
+    if (moveFrameRef.current != null) return;
+    moveFrameRef.current = requestAnimationFrame(() => { moveFrameRef.current = null; const latest = moveRef.current; if (latest) sendMouse("mouse_move", { x: latest.x, y: latest.y }, true); });
+  }
+  function buttonName(button: number) { return button === 0 ? "left" : button === 1 ? "middle" : button === 2 ? "right" : null; }
+  function mouseButton(event: React.MouseEvent<HTMLVideoElement>, down: boolean) { const button = buttonName(event.button); if (!button) return; event.preventDefault(); sendMouse(down ? "mouse_down" : "mouse_up", { button }); }
+  function releaseButtons() { for (const button of ["left", "right", "middle"]) sendMouse("mouse_up", { button }); }
+  function mouseWheel(event: React.WheelEvent<HTMLVideoElement>) { event.preventDefault(); sendMouse("mouse_scroll", { dx: Math.max(-1200, Math.min(1200, Math.round(-event.deltaX))), dy: Math.max(-1200, Math.min(1200, Math.round(-event.deltaY))) }); }
+  async function enableMouse() {
+    const sessionId = sessionIdRef.current; if (!sessionId) return; setMouseRequesting(true); setError("");
+    try { const result = await api<{ session: { permissions: string[] } }>(`/api/sessions/${sessionId}/mouse-control`, { method: "POST" }); if (result.session.permissions.includes("MOUSE_CONTROL")) { setMouseAuthorized(true); setMouseEnabled(true); setMouseRequesting(false); } } catch (reason) { setMouseRequesting(false); setError(reason instanceof Error ? reason.message : "Unable to request mouse control"); }
+  }
+  async function disableMouse() { const sessionId = sessionIdRef.current; setMouseEnabled(false); if (sessionId) await api(`/api/sessions/${sessionId}/mouse-control`, { method: "DELETE" }); }
+
   const stateLabel = state === "waiting_frame" ? "Waiting for first frame" : state === "streaming" ? "Streaming" : state;
   return <main className="viewer"><header><Link href="/devices" className="back">← Devices</Link><div><strong>{device?.deviceName ?? "Remote device"}</strong><span className={`connection ${state}`}>{stateLabel}</span></div><button className="secondary" onClick={disconnect}>Disconnect</button></header>
-    <section className="screen"><video ref={videoRef} autoPlay playsInline onPlaying={videoPlaying} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}</section>
-    <footer><div><span>Resolution<strong>{stats.resolution}</strong></span><span>FPS<strong>{stats.fps}</strong></span><span>Bitrate<strong>{stats.bitrate}</strong></span><span>Network RTT<strong>{stats.networkRtt}</strong></span><span>Packet loss<strong>{stats.packetLoss}</strong></span><span>ICE route<strong>{stats.route}</strong></span><span>Protocol<strong>{stats.protocol}</strong></span></div><button className="secondary" onClick={() => void fullscreen()}>Fullscreen</button></footer>
+    <section className="screen"><video ref={videoRef} autoPlay playsInline onPlaying={videoPlaying} onMouseMove={mouseMove} onMouseDown={(event) => mouseButton(event, true)} onMouseUp={(event) => mouseButton(event, false)} onMouseLeave={releaseButtons} onContextMenu={(event) => mouseEnabled && event.preventDefault()} onWheel={mouseWheel} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}</section>
+    <footer><div><span>Resolution<strong>{stats.resolution}</strong></span><span>FPS<strong>{stats.fps}</strong></span><span>Bitrate<strong>{stats.bitrate}</strong></span><span>Network RTT<strong>{stats.networkRtt}</strong></span><span>Packet loss<strong>{stats.packetLoss}</strong></span><span>ICE route<strong>{stats.route}</strong></span><span>Protocol<strong>{stats.protocol}</strong></span><span>Control channel<strong>{controlChannel}</strong></span><span>Mouse Control<strong>{mouseEnabled ? "ON" : "OFF"}</strong></span></div>{mouseEnabled ? <button className="secondary" onClick={() => void disableMouse()}>Disable Mouse Control</button> : <button className="secondary" disabled={mouseRequesting || state !== "streaming" || controlChannel !== "connected"} onClick={() => void enableMouse()}>{mouseRequesting ? "Waiting for approval…" : "Enable Mouse Control"}</button>}<button className="secondary" onClick={() => void fullscreen()}>Fullscreen</button></footer>
   </main>;
 }

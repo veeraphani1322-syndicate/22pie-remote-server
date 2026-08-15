@@ -4,6 +4,7 @@ mod consent;
 mod device;
 mod logging;
 mod media;
+mod mouse;
 mod protocol;
 mod trusted_access;
 
