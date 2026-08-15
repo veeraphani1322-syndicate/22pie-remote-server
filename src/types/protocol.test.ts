@@ -17,3 +17,12 @@ test("rejects signaling with unknown fields", () => {
     command: "not-allowed",
   }).success, false);
 });
+
+test("accepts device-originated permission-specific trust messages", () => {
+  assert.equal(agentMessageSchema.safeParse({
+    type: "trust_grant", sessionId: "4f63cc0c-f1f9-4e4f-9f56-ced4e345d813", permission: "SCREEN_VIEW",
+  }).success, true);
+  assert.equal(agentMessageSchema.safeParse({
+    type: "trust_grant", sessionId: "4f63cc0c-f1f9-4e4f-9f56-ced4e345d813", permission: "MOUSE_CONTROL",
+  }).success, false);
+});

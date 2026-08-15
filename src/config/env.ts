@@ -14,6 +14,7 @@ const envSchema = z.object({
   ADMIN_EMAIL: z.string().email(),
   ADMIN_PASSWORD_HASH: z.string().min(20),
   DEVICE_STORE_PATH: z.string().default("data/devices.json"),
+  TRUST_STORE_PATH: z.string().default("data/trusted-access.json"),
   SESSION_APPROVAL_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   SESSION_NEGOTIATION_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
   SESSION_DISCONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),

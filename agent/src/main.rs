@@ -5,6 +5,7 @@ mod device;
 mod logging;
 mod media;
 mod protocol;
+mod trusted_access;
 
 use anyhow::Result;
 use config::Config;
@@ -17,6 +18,16 @@ async fn main() -> Result<()> {
     logging::init();
     let config = Config::from_env()?;
     let device = DeviceIdentity::load()?;
+    let trusted_access = trusted_access::TrustedAccess::load(device.device_id)?;
+    let (local_command_tx, local_command_rx) = tokio::sync::mpsc::channel(1);
+    tokio::task::spawn_blocking(move || {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            if line.trim().eq_ignore_ascii_case("revoke-trust") {
+                let _ = local_command_tx.blocking_send(());
+            }
+        }
+    });
 
     println!(
         "\n22Pie Remote Agent v{}\n\nDevice Name:\n{}\n\nOperating System:\n{}\n\nArchitecture:\n{}\n\nDevice ID:\n{}\n\nServer:\n{}\n",
@@ -27,6 +38,7 @@ async fn main() -> Result<()> {
         device.device_id,
         config.server_url,
     );
+    println!("Trusted access: type revoke-trust and press Enter to review/revoke.\n");
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_task = tokio::spawn(async move {
@@ -39,7 +51,14 @@ async fn main() -> Result<()> {
         }
     });
 
-    connection::run(config, device, shutdown_rx).await;
+    connection::run(
+        config,
+        device,
+        trusted_access,
+        local_command_rx,
+        shutdown_rx,
+    )
+    .await;
     signal_task.abort();
     Ok(())
 }

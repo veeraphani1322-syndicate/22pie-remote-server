@@ -24,6 +24,16 @@ pub enum AgentMessage<'a> {
         #[serde(rename = "sessionId")]
         session_id: &'a str,
     },
+    TrustGrant {
+        #[serde(rename = "sessionId")]
+        session_id: &'a str,
+        permission: Permission,
+    },
+    TrustRevoke {
+        #[serde(rename = "userId")]
+        user_id: &'a str,
+        permission: Permission,
+    },
     SessionReject {
         #[serde(rename = "sessionId")]
         session_id: &'a str,
@@ -84,9 +94,12 @@ pub enum ServerMessage {
     SessionRequested {
         #[serde(rename = "sessionId")]
         session_id: String,
+        #[serde(rename = "viewerUserId")]
+        viewer_user_id: String,
         #[serde(rename = "viewerName")]
         viewer_name: String,
         permissions: Vec<Permission>,
+        trusted: bool,
         #[serde(rename = "iceServers")]
         ice_servers: Vec<IceServer>,
     },
@@ -109,13 +122,18 @@ pub enum ServerMessage {
         session_id: String,
         reason: String,
     },
+    TrustRevoked {
+        #[serde(rename = "userId")]
+        user_id: String,
+        permission: Permission,
+    },
     Error {
         code: String,
         message: String,
     },
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Permission {
     ScreenView,

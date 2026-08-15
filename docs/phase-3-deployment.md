@@ -27,6 +27,7 @@ ADMIN_PASSWORD_HASH=<argon2id-output>
 PUBLIC_BASE_URL=http://8.234.114.242:4000
 CORS_ORIGIN=http://8.234.114.242:3000
 DEVICE_STORE_PATH=data/devices.json
+TRUST_STORE_PATH=data/trusted-access.json
 ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302"]}]
 ```
 
@@ -44,7 +45,7 @@ Start the server:
 npm start
 ```
 
-The persistent device credential registry is written with owner-only permissions under `data/` by default. Back it up securely. Deleting it causes the server to forget enrolled device public keys.
+The persistent device credential registry and trusted-access repository are written with owner-only permissions under `data/` by default. Back them up securely. Trust records are bound to the authenticated user, device ID, device public key, and `SCREEN_VIEW` permission.
 
 ## Dashboard startup
 
@@ -84,15 +85,18 @@ Download `22PieRemoteAgent-Windows` from the successful **Build Windows Agent** 
 4. Run the new `22PieRemoteAgent.exe` on Windows and confirm it reports online.
 5. Open `http://8.234.114.242:3000`, sign in, and confirm only owned devices are listed.
 6. Select **View screen**. Confirm no capture starts yet.
-7. On Windows, choose **No**. Confirm the viewer reports rejection and no video appears.
-8. Request again and choose **Yes**. Confirm the persistent sharing indicator appears.
-9. Confirm live video appears, preserves aspect ratio, and updates when the Windows desktop changes.
-10. Confirm resolution, FPS, bitrate, latency, packet loss, and Direct/Relay values come from browser WebRTC statistics.
-11. Select **Fullscreen**, then exit fullscreen.
-12. Select **Disconnect** and confirm capture ends.
-13. Repeat, then use the Windows sharing indicator to stop locally; confirm the browser session ends immediately.
-14. Close the agent during a session and confirm the viewer session fails and cleans up.
-15. Leave an approval request unanswered and confirm it expires after 60 seconds.
-16. Confirm heartbeat/reconnect still works after restarting the agent.
+7. On Windows, choose **Deny**. Confirm the viewer reports rejection and no video appears.
+8. Request again and choose **Allow Once**. Confirm the session works and the next request prompts again.
+9. Choose **Trust This Account**, disconnect, and confirm the next two sessions start without another consent dialog.
+10. Revoke from the dashboard and confirm the next request displays consent again.
+11. To revoke locally, type `revoke-trust` in the running agent console, press Enter, and confirm the visible trusted-access dialog.
+12. Confirm live video appears, preserves aspect ratio, and updates when the Windows desktop changes.
+13. Confirm resolution, FPS, bitrate, Network RTT, packet loss, Direct/Relay, and protocol values come from browser WebRTC statistics.
+14. Select **Fullscreen**, then exit fullscreen.
+15. Select **Disconnect** and confirm capture ends.
+16. Repeat, then use the Windows sharing indicator to stop locally; confirm the browser session ends immediately.
+17. Close the agent during a session and confirm the viewer session fails and cleans up.
+18. Leave an approval request unanswered and confirm it expires after 60 seconds.
+19. Confirm heartbeat/reconnect still works after restarting the agent.
 
 Successful builds do not prove this test. Record browser, Windows version, networks, whether the selected ICE route was Direct or Relay, and any failures when performing it.

@@ -1,8 +1,10 @@
 use crate::media::{MediaCommand, MediaEvent, MediaSession};
 use crate::{
     config::Config,
+    consent::ConsentDecision,
     device::DeviceIdentity,
     protocol::{AgentMessage, DeviceStatus, ServerMessage},
+    trusted_access::TrustedAccess,
 };
 use anyhow::{anyhow, Context, Result};
 use futures_util::future::pending;
@@ -30,7 +32,13 @@ enum IncomingMessage {
     ControlFrame,
 }
 
-pub async fn run(config: Config, device: DeviceIdentity, mut shutdown: watch::Receiver<bool>) {
+pub async fn run(
+    config: Config,
+    device: DeviceIdentity,
+    mut trusted_access: TrustedAccess,
+    mut local_commands: mpsc::Receiver<()>,
+    mut shutdown: watch::Receiver<bool>,
+) {
     let mut backoff = Duration::from_secs(1);
 
     loop {
@@ -45,7 +53,16 @@ pub async fn run(config: Config, device: DeviceIdentity, mut shutdown: watch::Re
                 info!("Connected");
                 println!("Connected");
                 backoff = Duration::from_secs(1);
-                match handle_connection(stream, &config, &device, &mut shutdown).await {
+                match handle_connection(
+                    stream,
+                    &config,
+                    &device,
+                    &mut trusted_access,
+                    &mut local_commands,
+                    &mut shutdown,
+                )
+                .await
+                {
                     Ok(ConnectionEnd::Shutdown) => break,
                     Ok(ConnectionEnd::Disconnected) => info!("Disconnected"),
                     Err(error) => warn!(error = %error, "Connection ended"),
@@ -81,6 +98,8 @@ async fn handle_connection<S>(
     stream: tokio_tungstenite::WebSocketStream<S>,
     config: &Config,
     device: &DeviceIdentity,
+    trusted_access: &mut TrustedAccess,
+    local_commands: &mut mpsc::Receiver<()>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<ConnectionEnd>
 where
@@ -133,19 +152,41 @@ where
         return Ok(ConnectionEnd::Shutdown);
     }
     info!("Registered successfully");
+    let pending_revocations = trusted_access.pending_revocations_for(&config.server_url);
+    for revoked in &pending_revocations {
+        send(
+            &mut writer,
+            &AgentMessage::TrustRevoke {
+                user_id: &revoked.user_id,
+                permission: crate::protocol::Permission::ScreenView,
+            },
+        )
+        .await?;
+    }
+    if !pending_revocations.is_empty() {
+        trusted_access.clear_pending_revocations_for(&config.server_url)?;
+    }
     println!("Registered successfully\n\nStatus:\nONLINE\n\nPress Ctrl+C to stop.\n");
 
     let mut heartbeat = time::interval(config.heartbeat_interval);
     heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
     let mut awaiting_ack = false;
-    let (consent_tx, mut consent_rx) =
-        mpsc::channel::<(String, bool, Vec<crate::protocol::IceServer>)>(1);
+    let (consent_tx, mut consent_rx) = mpsc::channel::<(
+        String,
+        String,
+        String,
+        ConsentDecision,
+        Vec<crate::protocol::IceServer>,
+    )>(1);
     let mut consent_pending: Option<String> = None;
     let mut consent_started_at: Option<Instant> = None;
     let mut media: Option<MediaSession> = None;
     let mut active_session_id: Option<String> = None;
     let mut local_stop: Option<tokio::sync::oneshot::Receiver<()>> = None;
+    let (review_tx, mut review_rx) = mpsc::channel(1);
+    let mut review_pending = false;
+    let mut local_commands_open = true;
 
     loop {
         tokio::select! {
@@ -154,6 +195,29 @@ where
                     writer.send(Message::Close(None)).await.ok();
                     writer.close().await.ok();
                     return Ok(ConnectionEnd::Shutdown);
+                }
+            }
+            command = local_commands.recv(), if local_commands_open => {
+                if command.is_none() { local_commands_open = false; }
+                if command.is_some() && !review_pending && !trusted_access.grants().is_empty() {
+                    review_pending = true;
+                    let grants = trusted_access.grants().to_vec();
+                    let tx = review_tx.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.send(crate::consent::review_trusted_access(&grants).await).await;
+                    });
+                }
+            }
+            review = review_rx.recv() => {
+                review_pending = false;
+                if review == Some(true) {
+                    trusted_access.revoke_all_locally()?;
+                    let revoked = trusted_access.pending_revocations_for(&config.server_url);
+                    for record in &revoked {
+                        send(&mut writer, &AgentMessage::TrustRevoke { user_id: &record.user_id, permission: crate::protocol::Permission::ScreenView }).await?;
+                    }
+                    trusted_access.clear_pending_revocations_for(&config.server_url)?;
+                    info!(count = revoked.len(), "Trusted screen access revoked locally");
                 }
             }
             _ = heartbeat.tick() => {
@@ -172,19 +236,23 @@ where
                     IncomingMessage::Protocol(ServerMessage::Error { code, message }) => {
                         warn!(%code, %message, "Server reported an error");
                     }
-                    IncomingMessage::Protocol(ServerMessage::SessionRequested { session_id, viewer_name, permissions, ice_servers }) => {
+                    IncomingMessage::Protocol(ServerMessage::SessionRequested { session_id, viewer_user_id, viewer_name, permissions, trusted, ice_servers }) => {
                         info!(%session_id, "Screen-view session request received");
                         if consent_pending.is_some() || media.is_some() || permissions != vec![crate::protocol::Permission::ScreenView] {
                             send(&mut writer, &AgentMessage::SessionReject { session_id: &session_id, reason: "another_request_pending" }).await?;
                         } else {
                             consent_pending = Some(session_id.clone());
                             consent_started_at = Some(Instant::now());
-                            let tx = consent_tx.clone();
-                            let device_name = device.device_name.clone();
-                            tokio::spawn(async move {
-                                let allowed = crate::consent::request_screen_view(viewer_name, device_name).await;
-                                let _ = tx.send((session_id, allowed, ice_servers)).await;
-                            });
+                            if trusted && trusted_access.has_screen_view(&config.server_url, &viewer_user_id) {
+                                let _ = consent_tx.send((session_id, viewer_user_id, viewer_name, ConsentDecision::ExistingTrust, ice_servers)).await;
+                            } else {
+                                let tx = consent_tx.clone();
+                                let device_name = device.device_name.clone();
+                                tokio::spawn(async move {
+                                    let decision = crate::consent::request_screen_view(viewer_name.clone(), device_name).await;
+                                    let _ = tx.send((session_id, viewer_user_id, viewer_name, decision, ice_servers)).await;
+                                });
+                            }
                         }
                     }
                     IncomingMessage::Protocol(ServerMessage::WebrtcAnswer { session_id, sdp }) => {
@@ -209,22 +277,30 @@ where
                             info!(%session_id, %reason, "Screen sharing ended");
                         }
                     }
+                    IncomingMessage::Protocol(ServerMessage::TrustRevoked { user_id, permission: crate::protocol::Permission::ScreenView }) => {
+                        trusted_access.revoke_screen_view(&config.server_url, &user_id)?;
+                        info!(%user_id, "Local screen-view trust revoked by server");
+                    }
                     IncomingMessage::Protocol(other) => debug!(?other, "Ignoring unexpected server message"),
                     IncomingMessage::ControlFrame => {}
                     IncomingMessage::Closed => return Ok(ConnectionEnd::Disconnected),
                 }
             }
             consent = consent_rx.recv() => {
-                if let Some((session_id, allowed, ice_servers)) = consent {
+                if let Some((session_id, viewer_user_id, viewer_name, decision, ice_servers)) = consent {
                     if consent_pending.as_deref() != Some(&session_id) {
                         debug!(%session_id, "Ignoring stale screen-sharing consent result");
                         continue;
                     }
                     consent_pending = None;
                     if let Some(started_at) = consent_started_at.take() {
-                        debug!(CONSENT_MS = started_at.elapsed().as_millis(), %session_id, allowed, "Screen-sharing consent completed");
+                        debug!(CONSENT_MS = started_at.elapsed().as_millis(), %session_id, ?decision, "Screen-sharing consent completed");
                     }
-                    if allowed {
+                    if decision != ConsentDecision::Deny {
+                        if decision == ConsentDecision::TrustAccount {
+                            trusted_access.grant_screen_view(&config.server_url, &viewer_user_id, &viewer_name)?;
+                            send(&mut writer, &AgentMessage::TrustGrant { session_id: &session_id, permission: crate::protocol::Permission::ScreenView }).await?;
+                        }
                         let media_started_at = Instant::now();
                         match crate::media::start(ice_servers).await {
                             Ok(started) => {

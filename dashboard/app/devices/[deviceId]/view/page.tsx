@@ -29,10 +29,10 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
       try {
         const [deviceResult, created] = await Promise.all([
           api<Device>(`/api/devices/${deviceId}`),
-          api<{ session: { sessionId: string }; iceServers: IceServer[] }>(`/api/devices/${deviceId}/sessions`, { method: "POST" }),
+          api<{ session: { sessionId: string; trusted: boolean }; iceServers: IceServer[] }>(`/api/devices/${deviceId}/sessions`, { method: "POST" }),
         ]);
         if (!active) return;
-        setDevice(deviceResult); setState("awaiting");
+        setDevice(deviceResult); setState(created.session.trusted ? "starting" : "awaiting");
         console.debug(`SESSION_REQUEST_MS=${(performance.now() - requestStartedAt).toFixed(1)}`);
         const sessionId = created.session.sessionId;
         const peer = new RTCPeerConnection({ iceServers: created.iceServers });

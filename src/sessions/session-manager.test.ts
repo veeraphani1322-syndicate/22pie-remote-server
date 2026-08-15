@@ -3,6 +3,7 @@ import test from "node:test";
 import WebSocket from "ws";
 import type { DeviceManager } from "../devices/device-manager.js";
 import { SessionManager } from "./session-manager.js";
+import { TrustedAccessStore } from "../trust/trusted-access-store.js";
 
 interface FakeSocket {
   readyState: number;
@@ -28,9 +29,10 @@ function fakeSocket(): FakeSocket & WebSocket {
 
 function fixture() {
   const agent = fakeSocket();
-  const devices = { socketFor: () => agent } as unknown as DeviceManager;
-  const sessions = new SessionManager(devices, 60_000, 60_000, []);
-  return { agent, sessions };
+  const devices = { socketFor: () => agent, publicKeyFor: () => "test-device-key" } as unknown as DeviceManager;
+  const trust = new TrustedAccessStore(`/private/tmp/22pie-session-trust-${process.pid}-${Math.random()}.json`);
+  const sessions = new SessionManager(devices, 60_000, 60_000, [], trust);
+  return { agent, sessions, trust };
 }
 
 test("closing the attached viewer ends the session and notifies the agent", () => {
@@ -45,6 +47,31 @@ test("closing the attached viewer ends the session and notifies the agent", () =
   assert.deepEqual(agent.messages.at(-1), {
     type: "session_ended", sessionId: session.sessionId, reason: "viewer_socket_closed",
   });
+});
+
+test("only device-granted trust makes a later session trusted", () => {
+  const { agent, sessions, trust } = fixture();
+  const first = sessions.request("user-a", "device-a", "Viewer");
+  assert.equal(first.trusted, false);
+  sessions.fromAgent("device-a", { type: "trust_grant", sessionId: first.sessionId, permission: "SCREEN_VIEW" });
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: first.sessionId });
+  sessions.end(first.sessionId, "test");
+
+  const second = sessions.request("user-a", "device-a", "Viewer");
+  assert.equal(second.trusted, true);
+  assert.equal(trust.has("device-a", "user-a", "SCREEN_VIEW", "test-device-key"), true);
+  assert.equal((agent.messages.at(-1) as { trusted?: boolean }).trusted, true);
+  sessions.end(second.sessionId, "test");
+});
+
+test("allow once and deny do not persist trust", () => {
+  const { sessions, trust } = fixture();
+  const allowed = sessions.request("user-a", "device-a", "Viewer");
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: allowed.sessionId });
+  sessions.end(allowed.sessionId, "test");
+  const denied = sessions.request("user-a", "device-a", "Viewer");
+  sessions.fromAgent("device-a", { type: "session_reject", sessionId: denied.sessionId, reason: "denied" });
+  assert.equal(trust.has("device-a", "user-a", "SCREEN_VIEW", "test-device-key"), false);
 });
 
 test("an old replacement viewer cannot end the session, but the current viewer can", () => {

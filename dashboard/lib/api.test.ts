@@ -44,3 +44,8 @@ test("API client exposes unauthorized and network failures", async () => {
   globalThis.fetch = (async () => { throw new TypeError("network"); }) as typeof fetch;
   await assert.rejects(api("/api/devices"), (error: unknown) => error instanceof ApiError && error.status === 0 && error.message === "Unable to connect to server");
 });
+
+test("API client accepts an empty 204 revocation response", async () => {
+  globalThis.fetch = (async () => new Response(null, { status: 204 })) as typeof fetch;
+  assert.equal(await api("/api/devices/device/trusted-access/SCREEN_VIEW", { method: "DELETE" }), undefined);
+});

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { DeviceManager } from "../devices/device-manager.js";
 import type { ServerMessage, ViewerMessage, AgentMessage } from "../types/protocol.js";
+import type { TrustedAccessStore } from "../trust/trusted-access-store.js";
 
 export type SessionStatus = "requested" | "accepted" | "connecting" | "connected" | "rejected" | "ended" | "failed" | "expired";
 
@@ -15,6 +16,7 @@ export interface SessionView {
   acceptedAt?: string;
   connectedAt?: string;
   endedAt?: string;
+  trusted: boolean;
 }
 
 interface SessionRecord extends SessionView {
@@ -34,20 +36,24 @@ export class SessionManager {
     private readonly approvalTimeoutMs: number,
     private readonly negotiationTimeoutMs: number,
     private readonly iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }>,
+    private readonly trustedAccess: TrustedAccessStore,
+    private readonly audit: (data: Record<string, unknown>, message: string) => void = () => undefined,
   ) {}
 
   request(userId: string, deviceId: string, viewerName: string): SessionView {
     const agent = this.devices.socketFor(deviceId);
     if (!agent) throw new Error("DEVICE_OFFLINE");
     const sessionId = randomUUID();
+    const trusted = this.trustedAccess.has(deviceId, userId, "SCREEN_VIEW", this.devices.publicKeyFor(deviceId));
     const record: SessionRecord = {
       sessionId, userId, deviceId, status: "requested", permissions: ["SCREEN_VIEW"],
-      requestedAt: new Date().toISOString(),
+      requestedAt: new Date().toISOString(), trusted,
       timeout: setTimeout(() => this.end(sessionId, "approval_timeout", "expired"), this.approvalTimeoutMs),
     };
     record.timeout.unref();
     this.sessions.set(sessionId, record);
-    send(agent, { type: "session_requested", sessionId, viewerName, permissions: ["SCREEN_VIEW"], iceServers: this.iceServers });
+    this.audit({ event: trusted ? "TRUST_USED" : "TRUST_REQUESTED", deviceId, userId, permission: "SCREEN_VIEW" }, trusted ? "Trusted access used" : "Trusted access requested");
+    send(agent, { type: "session_requested", sessionId, viewerUserId: userId, viewerName, permissions: ["SCREEN_VIEW"], trusted, iceServers: this.iceServers });
     return this.view(record);
   }
 
@@ -76,9 +82,22 @@ export class SessionManager {
   }
 
   fromAgent(deviceId: string, message: AgentMessage): void {
+    if (message.type === "trust_revoke") {
+      const revoked = this.trustedAccess.revoke(deviceId, message.userId, message.permission);
+      if (revoked) this.audit({ event: "TRUST_REVOKED", deviceId, userId: message.userId, permission: message.permission }, "Trusted access revoked by device");
+      return;
+    }
     if (!("sessionId" in message)) return;
     const session = this.sessions.get(message.sessionId);
     if (!session || session.deviceId !== deviceId) return;
+    if (message.type === "trust_grant" && session.status === "requested" && message.permission === "SCREEN_VIEW") {
+      const devicePublicKey = this.devices.publicKeyFor(deviceId);
+      if (!devicePublicKey) return;
+      this.trustedAccess.grant(deviceId, session.userId, message.permission, devicePublicKey);
+      session.trusted = true;
+      this.audit({ event: "TRUST_GRANTED", deviceId, userId: session.userId, permission: message.permission }, "Trusted access granted by device");
+      return;
+    }
     if (message.type === "session_accept" && session.status === "requested") {
       clearTimeout(session.timeout);
       session.status = "accepted";
@@ -89,6 +108,7 @@ export class SessionManager {
       return;
     }
     if (message.type === "session_reject") {
+      this.audit({ event: "TRUST_DENIED", deviceId, userId: session.userId, permission: "SCREEN_VIEW" }, "Screen access denied by device");
       this.end(session.sessionId, message.reason ?? "denied", "rejected");
       return;
     }

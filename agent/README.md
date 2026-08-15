@@ -4,7 +4,9 @@ This Rust agent authenticates an authorized computer, registers it with the 22Pi
 
 ## Phase 3 screen sharing
 
-Every viewing request displays a native Windows Allow/No prompt. Capture and WebRTC setup begin only after Allow. While sharing, a visible top-level 22Pie Remote indicator remains open; closing it stops capture and ends the viewer session. Only one screen request can be pending or active at a time.
+An untrusted viewing request displays a native Windows dialog with **Allow Once**, **Trust This Account**, and **Deny**. Trust is scoped to this device identity, server URL, stable account ID, and `SCREEN_VIEW`; both the server and agent must have matching records before a later prompt is skipped. While sharing, a visible top-level 22Pie Remote indicator remains open; closing it stops capture and ends the viewer session. Only one screen request can be pending or active at a time.
+
+Trusted access is stored at `%LOCALAPPDATA%\22Pie\RemoteAgent\trusted-access.json`. To review and revoke it locally while the console agent is running, type `revoke-trust`, press Enter, and use the visible Windows confirmation dialog. Revocation is synchronized to the authenticated server connection and does not terminate an already active session.
 
 The capture pipeline uses the primary monitor, scales conservatively to at most 1280×720, limits output to approximately 15 FPS, encodes H.264, and sends it through WebRTC rather than JSON screenshots. ICE configuration arrives over the authenticated agent channel, supporting direct STUN negotiation and TURN relay without embedding TURN secrets in the executable.
 

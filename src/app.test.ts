@@ -14,6 +14,7 @@ async function fixture() {
     JWT_SECRET: "test-secret-that-is-longer-than-thirty-two-characters",
     ADMIN_EMAIL: "owner@example.com", ADMIN_PASSWORD_HASH: await hash("test-password"),
     DEVICE_STORE_PATH: `/private/tmp/22pie-test-devices-${suffix}.json`,
+    TRUST_STORE_PATH: `/private/tmp/22pie-test-trust-${suffix}.json`,
     SESSION_APPROVAL_TIMEOUT_MS: 60_000, SESSION_NEGOTIATION_TIMEOUT_MS: 45_000,
     SESSION_DISCONNECT_TIMEOUT_MS: 15_000, PUBLIC_BASE_URL: "http://8.234.114.242:4000",
     ICE_SERVERS: "[]", corsOrigins: ["http://8.234.114.242:3000"], iceServers: [],
