@@ -58,7 +58,7 @@ export class SessionManager {
 
   attachViewer(sessionId: string, userId: string, socket: WebSocket): SessionView | undefined {
     const session = this.sessions.get(sessionId);
-    if (!session || session.userId !== userId || ["ended", "expired", "failed", "rejected"].includes(session.status)) return undefined;
+    if (!session || session.userId !== userId) return undefined;
     session.viewer?.close(4001, "Replaced by newer viewer connection");
     session.viewer = socket;
     return this.view(session);
@@ -94,6 +94,10 @@ export class SessionManager {
   fromViewer(sessionId: string, userId: string, message: ViewerMessage): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.userId !== userId || message.sessionId !== sessionId) return;
+    if (message.type === "session_connected") {
+      this.markConnected(sessionId, userId);
+      return;
+    }
     if (message.type === "session_end") {
       this.end(sessionId, message.reason ?? "viewer_disconnected", "ended");
       return;

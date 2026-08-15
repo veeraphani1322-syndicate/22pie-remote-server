@@ -32,6 +32,7 @@ export const iceCandidateSchema = z.object({
 export const sessionEndSchema = z.object({
   type: z.literal("session_end"), sessionId, reason: z.string().max(200).optional(),
 }).strict();
+export const sessionConnectedSchema = z.object({ type: z.literal("session_connected"), sessionId }).strict();
 
 export const agentMessageSchema = z.discriminatedUnion("type", [
   registerMessageSchema, authenticateMessageSchema, heartbeatMessageSchema,
@@ -40,7 +41,7 @@ export const agentMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export const viewerMessageSchema = z.discriminatedUnion("type", [
-  webRtcOfferSchema, webRtcAnswerSchema, iceCandidateSchema, sessionEndSchema,
+  webRtcOfferSchema, webRtcAnswerSchema, iceCandidateSchema, sessionConnectedSchema, sessionEndSchema,
 ]);
 
 export type RegisterMessage = z.infer<typeof registerMessageSchema>;

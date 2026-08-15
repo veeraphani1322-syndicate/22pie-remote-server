@@ -16,6 +16,7 @@ export default function LoginPage() {
     setError("");
     try {
       await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email: data.get("email"), password: data.get("password") }) });
+      await api("/api/auth/me");
       router.replace("/devices");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Login failed");

@@ -1,8 +1,10 @@
-# 22Pie Remote Server — Phase 1
+# 22Pie Remote Server — Phase 3
 
-Central server foundation for authorized remote administration of computers you own or have explicit permission to manage. Phase 1 provides REST health/device APIs, an agent WebSocket, registration, heartbeat monitoring, and in-memory online/offline tracking.
+Central server for authorized remote support on computers you own or have explicit permission to manage. It provides authenticated device APIs, an agent WebSocket, registration, heartbeat monitoring, and online/offline tracking.
 
-It intentionally does **not** include remote control, screen capture, command execution, file transfer, unattended persistence, WebRTC, authentication, databases, or public internet exposure.
+Phase 3 adds an authenticated Next.js dashboard, persistent per-device Ed25519 credentials, owner-filtered device access, explicit Windows Allow/Deny consent, WebRTC signaling, primary-monitor H.264 capture at up to 1280×720/15 FPS, configurable STUN/TURN, visible sharing status, session timeouts, and actual browser WebRTC statistics. See [`docs/phase-3-deployment.md`](docs/phase-3-deployment.md) for deployment and cross-network validation.
+
+It intentionally does **not** include mouse/keyboard control, clipboard access, command execution, file transfer, unattended persistence, a Windows service, or stealth functionality.
 
 ## Requirements
 

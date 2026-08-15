@@ -1,6 +1,14 @@
-# 22Pie Remote Agent — Phase 2.1
+# 22Pie Remote Agent — Phase 3
 
-This lightweight Rust agent identifies an authorized computer, registers it with the 22Pie server, sends heartbeats, reconnects with capped exponential backoff, and shuts down cleanly. It does not contain remote-control, command-execution, persistence, surveillance, or file-transfer capabilities.
+This Rust agent authenticates an authorized computer, registers it with the 22Pie server, sends heartbeats, reconnects with capped exponential backoff, and supports consent-gated live viewing of the Windows primary monitor. It does not contain mouse/keyboard control, command execution, persistence, surveillance, clipboard access, or file-transfer capabilities.
+
+## Phase 3 screen sharing
+
+Every viewing request displays a native Windows Allow/No prompt. Capture and WebRTC setup begin only after Allow. While sharing, a visible top-level 22Pie Remote indicator remains open; closing it stops capture and ends the viewer session. Only one screen request can be pending or active at a time.
+
+The capture pipeline uses the primary monitor, scales conservatively to at most 1280×720, limits output to approximately 15 FPS, encodes H.264, and sends it through WebRTC rather than JSON screenshots. ICE configuration arrives over the authenticated agent channel, supporting direct STUN negotiation and TURN relay without embedding TURN secrets in the executable.
+
+The existing UUID is now paired with an Ed25519 device key in `device.json`. Registration uses a fresh server challenge and signature. The private key remains on the endpoint and is never sent to the server.
 
 The development build connects to `ws://8.234.114.242:4000/agent` by default. Only use it on computers you own or have explicit permission to manage.
 

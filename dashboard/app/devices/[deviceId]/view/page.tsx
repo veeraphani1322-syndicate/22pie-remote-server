@@ -41,7 +41,10 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
           if (candidate && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ice_candidate", sessionId, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex }));
         };
         peer.onconnectionstatechange = () => {
-          if (peer.connectionState === "connected") setState("connected");
+          if (peer.connectionState === "connected") {
+            setState("connected");
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_connected", sessionId }));
+          }
           if (["failed", "disconnected", "closed"].includes(peer.connectionState)) setState(peer.connectionState === "failed" ? "failed" : "ended");
         };
         socket.onmessage = async ({ data }) => {
@@ -49,6 +52,8 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
           if (message.type === "session_state") {
             const session = message.session as { status?: string };
             if (session.status === "accepted" || session.status === "connecting") setState("connecting");
+            if (session.status === "rejected") { setState("rejected"); setError("The remote user denied the request."); }
+            if (["ended", "expired", "failed"].includes(session.status ?? "")) { setState("ended"); setError(`Session ${session.status}.`); }
           }
           if (message.type === "session_accepted") setState("connecting");
           if (message.type === "session_rejected") { setState("rejected"); setError(String(message.reason ?? "The remote user denied the request.")); }

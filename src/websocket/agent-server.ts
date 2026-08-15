@@ -94,14 +94,7 @@ export class AgentWebSocketServer {
           send(socket, { type: "error", code: "AUTH_NOT_PENDING", message: "Register before authenticating" });
           return;
         }
-        const rawKey = Buffer.from(pendingRegistration.publicKey, "base64");
-        const key = createPublicKey({
-          key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), rawKey]),
-          format: "der",
-          type: "spki",
-        });
-        const signed = Buffer.from(`${pendingRegistration.deviceId}:${challenge}`, "utf8");
-        if (!verify(null, signed, key, Buffer.from(parsed.data.signature, "base64"))) {
+        if (!verifyDeviceSignature(pendingRegistration.deviceId, challenge, pendingRegistration.publicKey, parsed.data.signature)) {
           send(socket, { type: "error", code: "DEVICE_AUTH_FAILED", message: "Invalid device signature" });
           socket.close(1008, "Device authentication failed");
           return;
@@ -163,5 +156,20 @@ export class AgentWebSocketServer {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.devices.closeAll();
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
+  }
+}
+
+function verifyDeviceSignature(deviceId: string, challenge: string, publicKey: string, signature: string): boolean {
+  try {
+    const rawKey = Buffer.from(publicKey, "base64");
+    if (rawKey.length !== 32) return false;
+    const key = createPublicKey({
+      key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), rawKey]),
+      format: "der",
+      type: "spki",
+    });
+    return verify(null, Buffer.from(`${deviceId}:${challenge}`, "utf8"), key, Buffer.from(signature, "base64"));
+  } catch {
+    return false;
   }
 }
