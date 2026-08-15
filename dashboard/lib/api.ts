@@ -9,12 +9,16 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type") && isJsonBody(init?.body)) {
+    headers.set("Content-Type", "application/json");
+  }
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers,
     });
   } catch {
     throw new ApiError("Unable to connect to server", 0);
@@ -24,4 +28,14 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(response.status === 401 ? "Session expired" : body.error ?? `Request failed (${response.status})`, response.status);
   }
   return response.json() as Promise<T>;
+}
+
+function isJsonBody(body: BodyInit | null | undefined): boolean {
+  if (typeof body !== "string" || body.length === 0) return false;
+  try {
+    JSON.parse(body);
+    return true;
+  } catch {
+    return false;
+  }
 }
