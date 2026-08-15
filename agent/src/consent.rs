@@ -96,7 +96,11 @@ fn try_task_dialog(
         "Computer: {device_name}\n\nRequested permissions:\nScreen viewing{}",
         if mouse_control { "\nMouse control" } else { "" }
     ));
-    let allow = wide("Allow Once\nAllow screen viewing for only this session.");
+    let allow = wide(if mouse_control {
+        "Allow Once\nAllow remote mouse control for only this session."
+    } else {
+        "Allow Once\nAllow screen viewing for only this session."
+    });
     let trust = wide(if mouse_control {
         "Trust These Permissions\nAllow mouse control now and in future sessions until revoked."
     } else {
