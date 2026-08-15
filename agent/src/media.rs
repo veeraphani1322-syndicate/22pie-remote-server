@@ -143,9 +143,10 @@ mod windows {
         let state_connected = capture_connected.clone();
         peer.on_peer_connection_state_change(Box::new(move |state| {
             let tx = state_tx.clone();
+            let connected = state_connected.clone();
             Box::pin(async move {
                 if state == RTCPeerConnectionState::Connected {
-                    state_connected.store(true, Ordering::Release);
+                    connected.store(true, Ordering::Release);
                     info!(
                         WEBRTC_NEGOTIATION_MS = media_started_at.elapsed().as_millis(),
                         "WebRTC peer connected"
