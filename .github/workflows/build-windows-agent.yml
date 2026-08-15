@@ -36,6 +36,7 @@ jobs:
         run: |
           cargo fmt --check
           cargo check --locked --target x86_64-pc-windows-msvc
+          cargo test --locked --target x86_64-pc-windows-msvc
           cargo build --release --locked --target x86_64-pc-windows-msvc
 
       - name: Verify executable
@@ -43,6 +44,12 @@ jobs:
         run: |
           $exe = "target/x86_64-pc-windows-msvc/release/22PieRemoteAgent.exe"
           if (-not (Test-Path $exe)) { throw "Expected executable not found: $exe" }
+          $llvmReadObj = Get-Command llvm-readobj.exe -ErrorAction Stop
+          $imports = & $llvmReadObj.Source --coff-imports $exe
+          if ($imports -match "TaskDialogIndirect") {
+            throw "The executable has a hard TaskDialogIndirect import"
+          }
+          Write-Host "Verified: TaskDialogIndirect is not in the executable import table"
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4

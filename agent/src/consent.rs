@@ -11,6 +11,18 @@ pub enum ConsentDecision {
     ExistingTrust,
 }
 
+const ALLOW_ONCE: i32 = 1001;
+const TRUST_ACCOUNT: i32 = 1002;
+const DENY: i32 = 1003;
+
+fn decision_from_button(button: i32) -> ConsentDecision {
+    match button {
+        ALLOW_ONCE => ConsentDecision::AllowOnce,
+        TRUST_ACCOUNT => ConsentDecision::TrustAccount,
+        _ => ConsentDecision::Deny,
+    }
+}
+
 pub async fn request_screen_view(viewer_name: String, device_name: String) -> ConsentDecision {
     tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name))
         .await
@@ -34,13 +46,33 @@ fn wide(value: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 fn prompt(viewer_name: &str, device_name: &str) -> ConsentDecision {
+    try_task_dialog(viewer_name, device_name)
+        .unwrap_or_else(|| fallback_consent_window(viewer_name, device_name))
+}
+
+#[cfg(windows)]
+fn try_task_dialog(viewer_name: &str, device_name: &str) -> Option<ConsentDecision> {
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     use windows_sys::Win32::UI::Controls::{
-        TaskDialogIndirect, TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION,
-        TDF_USE_COMMAND_LINKS,
+        TASKDIALOGCONFIG, TASKDIALOG_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_USE_COMMAND_LINKS,
     };
-    const ALLOW_ONCE: i32 = 1001;
-    const TRUST_ACCOUNT: i32 = 1002;
-    const DENY: i32 = 1003;
+
+    type TaskDialogIndirectFn =
+        unsafe extern "system" fn(*const TASKDIALOGCONFIG, *mut i32, *mut i32, *mut i32) -> i32;
+
+    let library_name = wide("comctl32.dll");
+    let library = unsafe { LoadLibraryW(library_name.as_ptr()) };
+    if library.is_null() {
+        return None;
+    }
+    let address = unsafe { GetProcAddress(library, c"TaskDialogIndirect".as_ptr().cast()) };
+    let Some(address) = address else {
+        unsafe { FreeLibrary(library) };
+        return None;
+    };
+    let task_dialog: TaskDialogIndirectFn = unsafe { std::mem::transmute(address) };
+
     let title = wide("22Pie Remote");
     let instruction = wide(&format!(
         "{viewer_name} is requesting access to this computer."
@@ -77,21 +109,177 @@ fn prompt(viewer_name: &str, device_name: &str) -> ConsentDecision {
     config.nDefaultButton = DENY;
     let mut selected = DENY;
     let result = unsafe {
-        TaskDialogIndirect(
+        task_dialog(
             &config,
             &mut selected,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
     };
+    unsafe { FreeLibrary(library) };
     if result < 0 {
+        return None;
+    }
+    Some(decision_from_button(selected))
+}
+
+#[cfg(windows)]
+fn fallback_consent_window(viewer_name: &str, device_name: &str) -> ConsentDecision {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::Graphics::Gdi::UpdateWindow;
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        GetWindowLongPtrW, LoadCursorW, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
+        ShowWindow, TranslateMessage, BS_PUSHBUTTON, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG,
+        SW_SHOW, WM_CLOSE, WM_COMMAND, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU,
+        WS_VISIBLE,
+    };
+
+    unsafe extern "system" fn window_proc(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_COMMAND => {
+                let button = (wparam & 0xffff) as i32;
+                if matches!(button, ALLOW_ONCE | TRUST_ACCOUNT | DENY) {
+                    let selected = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut i32;
+                    if !selected.is_null() {
+                        *selected = button;
+                    }
+                    DestroyWindow(window);
+                    return 0;
+                }
+            }
+            WM_CLOSE => {
+                let selected = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut i32;
+                if !selected.is_null() {
+                    *selected = DENY;
+                }
+                DestroyWindow(window);
+                return 0;
+            }
+            _ => {}
+        }
+        DefWindowProcW(window, message, wparam, lparam)
+    }
+
+    unsafe fn child(
+        class_name: &[u16],
+        text: &[u16],
+        style: u32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        parent: HWND,
+        id: i32,
+    ) {
+        CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            text.as_ptr(),
+            WS_CHILD | WS_VISIBLE | style,
+            x,
+            y,
+            width,
+            height,
+            parent,
+            id as usize as *mut c_void,
+            GetModuleHandleW(std::ptr::null()),
+            std::ptr::null(),
+        );
+    }
+
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let class_name = wide("22PieConsentFallbackWindow");
+    let title = wide("22Pie Remote");
+    let mut class: WNDCLASSW = unsafe { std::mem::zeroed() };
+    class.lpfnWndProc = Some(window_proc);
+    class.hInstance = instance;
+    class.hCursor = unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) };
+    class.lpszClassName = class_name.as_ptr();
+    unsafe { RegisterClassW(&class) };
+
+    let window = unsafe {
+        CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            title.as_ptr(),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            560,
+            300,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            instance,
+            std::ptr::null(),
+        )
+    };
+    if window.is_null() {
         return ConsentDecision::Deny;
     }
-    match selected {
-        ALLOW_ONCE => ConsentDecision::AllowOnce,
-        TRUST_ACCOUNT => ConsentDecision::TrustAccount,
-        _ => ConsentDecision::Deny,
+
+    let mut selected = 0i32;
+    unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, (&mut selected as *mut i32) as isize) };
+    let static_class = wide("STATIC");
+    let button_class = wide("BUTTON");
+    let message = wide(&format!(
+        "{viewer_name} is requesting access to this computer.\n\nComputer: {device_name}\nRequested permission: Screen viewing"
+    ));
+    unsafe {
+        child(&static_class, &message, 0, 20, 18, 510, 100, window, 0);
+        child(
+            &button_class,
+            &wide("Allow Once"),
+            BS_PUSHBUTTON as u32,
+            20,
+            145,
+            150,
+            48,
+            window,
+            ALLOW_ONCE,
+        );
+        child(
+            &button_class,
+            &wide("Trust This Account"),
+            BS_PUSHBUTTON as u32,
+            190,
+            145,
+            170,
+            48,
+            window,
+            TRUST_ACCOUNT,
+        );
+        child(
+            &button_class,
+            &wide("Deny"),
+            BS_PUSHBUTTON as u32,
+            380,
+            145,
+            150,
+            48,
+            window,
+            DENY,
+        );
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+        SetForegroundWindow(window);
     }
+
+    let mut message: MSG = unsafe { std::mem::zeroed() };
+    while selected == 0 && unsafe { GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) } > 0 {
+        unsafe {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    decision_from_button(selected)
 }
 
 #[cfg(not(windows))]
@@ -146,6 +334,22 @@ pub fn show_sharing_indicator(stop: tokio::sync::oneshot::Sender<()>) {
         }
         let _ = stop.send(());
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_consent_buttons_map_to_the_expected_decisions() {
+        assert_eq!(decision_from_button(ALLOW_ONCE), ConsentDecision::AllowOnce);
+        assert_eq!(
+            decision_from_button(TRUST_ACCOUNT),
+            ConsentDecision::TrustAccount
+        );
+        assert_eq!(decision_from_button(DENY), ConsentDecision::Deny);
+        assert_eq!(decision_from_button(0), ConsentDecision::Deny);
+    }
 }
 
 #[cfg(not(windows))]
