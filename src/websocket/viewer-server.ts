@@ -57,6 +57,10 @@ export class ViewerWebSocketServer {
       }
     });
     socket.on("error", (error) => this.logger.warn({ err: error, sessionId, userId }, "Viewer WebSocket error"));
+    socket.on("close", () => {
+      this.logger.info({ sessionId, userId }, "Viewer WebSocket closed");
+      this.sessions.viewerDisconnected(sessionId, userId, socket);
+    });
   }
 
   async close(): Promise<void> {

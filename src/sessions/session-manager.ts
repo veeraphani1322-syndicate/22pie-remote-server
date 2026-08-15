@@ -64,6 +64,17 @@ export class SessionManager {
     return this.view(session);
   }
 
+  viewerDisconnected(sessionId: string, userId: string, socket: WebSocket): void {
+    const session = this.sessions.get(sessionId);
+    if (
+      !session ||
+      session.userId !== userId ||
+      session.viewer !== socket ||
+      ["ended", "failed", "expired", "rejected"].includes(session.status)
+    ) return;
+    this.end(sessionId, "viewer_socket_closed", "ended");
+  }
+
   fromAgent(deviceId: string, message: AgentMessage): void {
     if (!("sessionId" in message)) return;
     const session = this.sessions.get(message.sessionId);
