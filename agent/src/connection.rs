@@ -7,7 +7,10 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use futures_util::future::pending;
 use futures_util::{SinkExt, StreamExt};
-use std::{cmp::min, time::Duration};
+use std::{
+    cmp::min,
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc;
 use tokio::{sync::watch, time};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -139,6 +142,7 @@ where
     let (consent_tx, mut consent_rx) =
         mpsc::channel::<(String, bool, Vec<crate::protocol::IceServer>)>(1);
     let mut consent_pending: Option<String> = None;
+    let mut consent_started_at: Option<Instant> = None;
     let mut media: Option<MediaSession> = None;
     let mut active_session_id: Option<String> = None;
     let mut local_stop: Option<tokio::sync::oneshot::Receiver<()>> = None;
@@ -169,10 +173,12 @@ where
                         warn!(%code, %message, "Server reported an error");
                     }
                     IncomingMessage::Protocol(ServerMessage::SessionRequested { session_id, viewer_name, permissions, ice_servers }) => {
+                        info!(%session_id, "Screen-view session request received");
                         if consent_pending.is_some() || media.is_some() || permissions != vec![crate::protocol::Permission::ScreenView] {
                             send(&mut writer, &AgentMessage::SessionReject { session_id: &session_id, reason: "another_request_pending" }).await?;
                         } else {
                             consent_pending = Some(session_id.clone());
+                            consent_started_at = Some(Instant::now());
                             let tx = consent_tx.clone();
                             let device_name = device.device_name.clone();
                             tokio::spawn(async move {
@@ -194,6 +200,7 @@ where
                     IncomingMessage::Protocol(ServerMessage::SessionEnded { session_id, reason }) => {
                         if consent_pending.as_deref() == Some(&session_id) {
                             consent_pending = None;
+                            consent_started_at = None;
                             info!(%session_id, %reason, "Pending screen-sharing consent cancelled");
                         }
                         if active_session_id.as_deref() == Some(&session_id) {
@@ -214,9 +221,14 @@ where
                         continue;
                     }
                     consent_pending = None;
+                    if let Some(started_at) = consent_started_at.take() {
+                        debug!(CONSENT_MS = started_at.elapsed().as_millis(), %session_id, allowed, "Screen-sharing consent completed");
+                    }
                     if allowed {
+                        let media_started_at = Instant::now();
                         match crate::media::start(ice_servers).await {
                             Ok(started) => {
+                                debug!(MEDIA_STARTUP_MS = media_started_at.elapsed().as_millis(), %session_id, "Screen media initialized");
                                 let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
                                 crate::consent::show_sharing_indicator(stop_tx);
                                 active_session_id = Some(session_id.clone()); media = Some(started); local_stop = Some(stop_rx);

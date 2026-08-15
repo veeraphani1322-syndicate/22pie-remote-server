@@ -29,6 +29,7 @@ uuid = { version = "1.12", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
 bytes = "1.10"
+fast_image_resize = "6.1"
 openh264 = "0.9"
 scrap = "0.5"
 webrtc = "0.17"

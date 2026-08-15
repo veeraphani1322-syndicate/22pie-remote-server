@@ -46,9 +46,17 @@ mod windows {
     use crate::protocol::{IceServer, UrlList};
     use anyhow::{Context, Result};
     use bytes::Bytes;
+    use fast_image_resize::{
+        images::{Image, ImageRef},
+        PixelType, ResizeAlg, ResizeOptions, Resizer,
+    };
     use openh264::{
-        encoder::Encoder,
+        encoder::{
+            BitRate, Complexity, Encoder, EncoderConfig, FrameRate, IntraFramePeriod,
+            RateControlMode, UsageType,
+        },
         formats::{BgraSliceU8, YUVBuffer},
+        OpenH264API,
     };
     use scrap::{Capturer, Display};
     use std::{
@@ -57,9 +65,10 @@ mod windows {
             atomic::{AtomicBool, Ordering},
             Arc,
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
     use tokio::sync::mpsc;
+    use tracing::{debug, info};
     use webrtc::{
         api::{
             interceptor_registry::register_default_interceptors,
@@ -81,6 +90,7 @@ mod windows {
     };
 
     pub async fn start(ice_servers: Vec<IceServer>) -> Result<MediaSession> {
+        let media_started_at = Instant::now();
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs()?;
         let registry = register_default_interceptors(Registry::new(), &mut media_engine)?;
@@ -129,10 +139,17 @@ mod windows {
             })
         }));
         let state_tx = event_tx.clone();
+        let capture_connected = Arc::new(AtomicBool::new(false));
+        let state_connected = capture_connected.clone();
         peer.on_peer_connection_state_change(Box::new(move |state| {
             let tx = state_tx.clone();
             Box::pin(async move {
                 if state == RTCPeerConnectionState::Connected {
+                    state_connected.store(true, Ordering::Release);
+                    info!(
+                        WEBRTC_NEGOTIATION_MS = media_started_at.elapsed().as_millis(),
+                        "WebRTC peer connected"
+                    );
                     let _ = tx.send(MediaEvent::Connected).await;
                 }
                 if matches!(
@@ -152,16 +169,26 @@ mod windows {
             .local_description()
             .await
             .context("missing local WebRTC description")?;
+        debug!(
+            OFFER_CREATED_MS = media_started_at.elapsed().as_millis(),
+            "WebRTC offer created"
+        );
         event_tx.send(MediaEvent::Offer(local.sdp)).await.ok();
 
         let stopped = Arc::new(AtomicBool::new(false));
-        start_capture(track, stopped.clone(), event_tx.clone());
+        start_capture(track, stopped.clone(), capture_connected, event_tx.clone());
         let command_peer = peer.clone();
         tokio::spawn(async move {
             while let Some(command) = command_rx.recv().await {
                 let result = match command {
                     MediaCommand::Answer(sdp) => match RTCSessionDescription::answer(sdp) {
-                        Ok(answer) => command_peer.set_remote_description(answer).await,
+                        Ok(answer) => {
+                            debug!(
+                                ANSWER_RECEIVED_MS = media_started_at.elapsed().as_millis(),
+                                "WebRTC answer received"
+                            );
+                            command_peer.set_remote_description(answer).await
+                        }
                         Err(error) => Err(error),
                     },
                     MediaCommand::IceCandidate {
@@ -210,16 +237,29 @@ mod windows {
     fn start_capture(
         track: Arc<TrackLocalStaticSample>,
         stopped: Arc<AtomicBool>,
+        connected: Arc<AtomicBool>,
         event_tx: mpsc::Sender<MediaEvent>,
     ) {
         tokio::task::spawn_blocking(move || {
-            if let Err(error) = capture_loop(track, stopped) {
+            if let Err(error) = capture_loop(track, stopped, connected) {
                 let _ = event_tx.blocking_send(MediaEvent::Ended(error.to_string()));
             }
         });
     }
 
-    fn capture_loop(track: Arc<TrackLocalStaticSample>, stopped: Arc<AtomicBool>) -> Result<()> {
+    fn capture_loop(
+        track: Arc<TrackLocalStaticSample>,
+        stopped: Arc<AtomicBool>,
+        connected: Arc<AtomicBool>,
+    ) -> Result<()> {
+        while !stopped.load(Ordering::Acquire) && !connected.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let connected_at = Instant::now();
         let display = Display::primary().context("failed to find primary monitor")?;
         let mut capturer =
             Capturer::new(display).context("failed to start primary monitor capture")?;
@@ -230,30 +270,95 @@ mod windows {
             .min(1.0);
         let width = ((source_width as f64 * scale) as usize) & !1;
         let height = ((source_height as f64 * scale) as usize) & !1;
-        let mut encoder = Encoder::new().context("failed to initialize H.264 encoder")?;
+        let encoder_config = EncoderConfig::new()
+            .usage_type(UsageType::ScreenContentRealTime)
+            .complexity(Complexity::Low)
+            .rate_control_mode(RateControlMode::Bitrate)
+            .bitrate(BitRate::from_bps(2_000_000))
+            .max_frame_rate(FrameRate::from_hz(15.0))
+            .intra_frame_period(IntraFramePeriod::from_num_frames(30))
+            .skip_frames(true);
+        let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), encoder_config)
+            .context("failed to initialize H.264 encoder")?;
+        let mut packed_bgra = vec![0u8; source_width * source_height * 4];
+        let mut scaled_bgra = Image::new(width as u32, height as u32, PixelType::U8x4);
+        let mut yuv = YUVBuffer::new(width, height);
+        let mut resizer = Resizer::new();
+        let resize_options = ResizeOptions::new()
+            .resize_alg(ResizeAlg::Nearest)
+            .use_alpha(false);
         let runtime = tokio::runtime::Handle::current();
+        let frame_interval = Duration::from_nanos(1_000_000_000 / 15);
+        let mut next_frame_at = Instant::now();
+        let mut frame_count = 0u64;
         while !stopped.load(Ordering::SeqCst) {
+            let capture_started = Instant::now();
             match capturer.frame() {
                 Ok(frame) => {
                     let stride = frame.len() / source_height;
-                    let mut bgra = vec![0u8; width * height * 4];
-                    for y in 0..height {
-                        for x in 0..width {
-                            let sx = x * source_width / width;
-                            let sy = y * source_height / height;
-                            let source = sy * stride + sx * 4;
-                            let target = (y * width + x) * 4;
-                            bgra[target..target + 4].copy_from_slice(&frame[source..source + 4]);
-                        }
+                    for (source, target) in frame
+                        .chunks(stride)
+                        .zip(packed_bgra.chunks_mut(source_width * 4))
+                    {
+                        target.copy_from_slice(&source[..source_width * 4]);
                     }
-                    let yuv = YUVBuffer::from_rgb_source(BgraSliceU8::new(&bgra, (width, height)));
+                    let capture_ms = capture_started.elapsed().as_micros() as f64 / 1000.0;
+
+                    let resize_started = Instant::now();
+                    if source_width == width && source_height == height {
+                        scaled_bgra.buffer_mut().copy_from_slice(&packed_bgra);
+                    } else {
+                        let source = ImageRef::new(
+                            source_width as u32,
+                            source_height as u32,
+                            &packed_bgra,
+                            PixelType::U8x4,
+                        )?;
+                        resizer.resize(&source, &mut scaled_bgra, Some(&resize_options))?;
+                    }
+                    let resize_ms = resize_started.elapsed().as_micros() as f64 / 1000.0;
+
+                    let convert_started = Instant::now();
+                    yuv.read_bgra8(BgraSliceU8::new(scaled_bgra.buffer(), (width, height)));
+                    let color_convert_ms = convert_started.elapsed().as_micros() as f64 / 1000.0;
+
+                    let encode_started = Instant::now();
                     let encoded = encoder.encode(&yuv)?.to_vec();
+                    let encode_ms = encode_started.elapsed().as_micros() as f64 / 1000.0;
+
+                    let write_started = Instant::now();
                     runtime.block_on(track.write_sample(&Sample {
                         data: Bytes::from(encoded),
-                        duration: Duration::from_millis(67),
+                        duration: frame_interval,
                         ..Default::default()
                     }))?;
-                    std::thread::sleep(Duration::from_millis(67));
+                    let write_sample_ms = write_started.elapsed().as_micros() as f64 / 1000.0;
+                    frame_count += 1;
+                    if frame_count == 1 {
+                        info!(
+                            TIME_TO_FIRST_FRAME_MS = connected_at.elapsed().as_millis(),
+                            width, height, "First encoded frame written after WebRTC connection"
+                        );
+                    }
+                    if frame_count == 1 || frame_count % 150 == 0 {
+                        debug!(
+                            CAPTURE_MS = capture_ms,
+                            RESIZE_MS = resize_ms,
+                            COLOR_CONVERT_MS = color_convert_ms,
+                            ENCODE_MS = encode_ms,
+                            WRITE_SAMPLE_MS = write_sample_ms,
+                            frame_count,
+                            "Screen frame performance"
+                        );
+                    }
+
+                    next_frame_at += frame_interval;
+                    let now = Instant::now();
+                    if next_frame_at > now {
+                        std::thread::sleep(next_frame_at - now);
+                    } else {
+                        next_frame_at = now;
+                    }
                 }
                 Err(error) if error.kind() == WouldBlock => {
                     std::thread::sleep(Duration::from_millis(5))
