@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 const SCREEN_VIEW: &str = "SCREEN_VIEW";
 const MOUSE_CONTROL: &str = "MOUSE_CONTROL";
+const KEYBOARD_CONTROL: &str = "KEYBOARD_CONTROL";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +96,23 @@ impl TrustedAccess {
 
     pub fn revoke_mouse_control(&mut self, server_url: &str, user_id: &str) -> Result<()> {
         self.revoke_permission(server_url, user_id, MOUSE_CONTROL)
+    }
+
+    pub fn has_keyboard_control(&self, server_url: &str, user_id: &str) -> bool {
+        self.has_permission(server_url, user_id, KEYBOARD_CONTROL)
+    }
+
+    pub fn grant_keyboard_control(
+        &mut self,
+        server_url: &str,
+        user_id: &str,
+        viewer_name: &str,
+    ) -> Result<()> {
+        self.grant_permission(server_url, user_id, viewer_name, KEYBOARD_CONTROL)
+    }
+
+    pub fn revoke_keyboard_control(&mut self, server_url: &str, user_id: &str) -> Result<()> {
+        self.revoke_permission(server_url, user_id, KEYBOARD_CONTROL)
     }
 
     fn has_permission(&self, server_url: &str, user_id: &str, permission: &str) -> bool {

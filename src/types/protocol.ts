@@ -21,13 +21,15 @@ export const authenticateMessageSchema = z.object({
 export const heartbeatMessageSchema = z.object({ type: z.literal("heartbeat") }).strict();
 export const sessionAcceptSchema = z.object({ type: z.literal("session_accept"), sessionId }).strict();
 export const trustGrantSchema = z.object({
-  type: z.literal("trust_grant"), sessionId, permission: z.enum(["SCREEN_VIEW", "MOUSE_CONTROL"]),
+  type: z.literal("trust_grant"), sessionId, permission: z.enum(["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"]),
 }).strict();
 export const trustRevokeSchema = z.object({
-  type: z.literal("trust_revoke"), userId: z.string().min(1).max(128), permission: z.enum(["SCREEN_VIEW", "MOUSE_CONTROL"]),
+  type: z.literal("trust_revoke"), userId: z.string().min(1).max(128), permission: z.enum(["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"]),
 }).strict();
 export const mouseControlAcceptSchema = z.object({ type: z.literal("mouse_control_accept"), sessionId }).strict();
 export const mouseControlRejectSchema = z.object({ type: z.literal("mouse_control_reject"), sessionId, reason: z.string().max(200).optional() }).strict();
+export const keyboardControlAcceptSchema = z.object({ type: z.literal("keyboard_control_accept"), sessionId }).strict();
+export const keyboardControlRejectSchema = z.object({ type: z.literal("keyboard_control_reject"), sessionId, reason: z.string().max(200).optional() }).strict();
 export const sessionRejectSchema = z.object({
   type: z.literal("session_reject"), sessionId, reason: z.string().max(200).optional(),
 }).strict();
@@ -44,7 +46,7 @@ export const sessionConnectedSchema = z.object({ type: z.literal("session_connec
 
 export const agentMessageSchema = z.discriminatedUnion("type", [
   registerMessageSchema, authenticateMessageSchema, heartbeatMessageSchema,
-  sessionAcceptSchema, trustGrantSchema, trustRevokeSchema, mouseControlAcceptSchema, mouseControlRejectSchema, sessionRejectSchema, webRtcOfferSchema, webRtcAnswerSchema,
+  sessionAcceptSchema, trustGrantSchema, trustRevokeSchema, mouseControlAcceptSchema, mouseControlRejectSchema, keyboardControlAcceptSchema, keyboardControlRejectSchema, sessionRejectSchema, webRtcOfferSchema, webRtcAnswerSchema,
   iceCandidateSchema, sessionEndSchema,
 ]);
 
@@ -66,11 +68,16 @@ export type ServerMessage =
   | { type: "mouse_control_authorized"; sessionId: string }
   | { type: "mouse_control_rejected"; sessionId: string; reason: string }
   | { type: "mouse_control_disabled"; sessionId: string }
+  | { type: "keyboard_control_requested"; sessionId: string; viewerUserId: string; viewerName: string; trusted: boolean }
+  | { type: "keyboard_control_enabled"; sessionId: string }
+  | { type: "keyboard_control_authorized"; sessionId: string }
+  | { type: "keyboard_control_rejected"; sessionId: string; reason: string }
+  | { type: "keyboard_control_disabled"; sessionId: string }
   | { type: "session_accepted"; sessionId: string }
   | { type: "session_rejected"; sessionId: string; reason?: string }
   | { type: "webrtc_offer"; sessionId: string; sdp: string }
   | { type: "webrtc_answer"; sessionId: string; sdp: string }
   | { type: "ice_candidate"; sessionId: string; candidate: string; sdpMid: string | null; sdpMLineIndex: number | null }
   | { type: "session_ended"; sessionId: string; reason: string }
-  | { type: "trust_revoked"; userId: string; permission: "SCREEN_VIEW" | "MOUSE_CONTROL" }
+  | { type: "trust_revoked"; userId: string; permission: "SCREEN_VIEW" | "MOUSE_CONTROL" | "KEYBOARD_CONTROL" }
   | { type: "error"; code: string; message: string };

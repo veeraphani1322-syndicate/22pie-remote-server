@@ -72,6 +72,15 @@ pub enum AgentMessage<'a> {
         session_id: &'a str,
         reason: &'a str,
     },
+    KeyboardControlAccept {
+        #[serde(rename = "sessionId")]
+        session_id: &'a str,
+    },
+    KeyboardControlReject {
+        #[serde(rename = "sessionId")]
+        session_id: &'a str,
+        reason: &'a str,
+    },
 }
 
 impl<'a> AgentMessage<'a> {
@@ -148,6 +157,23 @@ pub enum ServerMessage {
         #[serde(rename = "sessionId")]
         session_id: String,
     },
+    KeyboardControlRequested {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "viewerUserId")]
+        viewer_user_id: String,
+        #[serde(rename = "viewerName")]
+        viewer_name: String,
+        trusted: bool,
+    },
+    KeyboardControlDisabled {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
+    KeyboardControlEnabled {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
     TrustRevoked {
         #[serde(rename = "userId")]
         user_id: String,
@@ -164,6 +190,7 @@ pub enum ServerMessage {
 pub enum Permission {
     ScreenView,
     MouseControl,
+    KeyboardControl,
 }
 
 #[derive(Debug, Clone, Deserialize)]

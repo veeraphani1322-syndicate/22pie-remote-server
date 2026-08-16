@@ -25,6 +25,14 @@ test("accepts device-originated permission-specific trust messages", () => {
   assert.equal(agentMessageSchema.safeParse({
     type: "trust_grant", sessionId: "4f63cc0c-f1f9-4e4f-9f56-ced4e345d813", permission: "MOUSE_CONTROL",
   }).success, true);
+  assert.equal(agentMessageSchema.safeParse({
+    type: "trust_grant", sessionId: "4f63cc0c-f1f9-4e4f-9f56-ced4e345d813", permission: "KEYBOARD_CONTROL",
+  }).success, true);
+});
+
+test("accepts keyboard authorization results and validates session IDs", () => {
+  assert.equal(agentMessageSchema.safeParse({ type: "keyboard_control_accept", sessionId: "4f63cc0c-f1f9-4e4f-9f56-ced4e345d813" }).success, true);
+  assert.equal(agentMessageSchema.safeParse({ type: "keyboard_control_reject", sessionId: "bad" }).success, false);
 });
 
 test("accepts mouse authorization results but rejects unknown control messages", () => {

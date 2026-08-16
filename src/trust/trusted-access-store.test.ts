@@ -19,6 +19,10 @@ test("trust is scoped by device, user, and permission and survives reload", () =
   assert.equal(store.has("device-a", "user-a", "MOUSE_CONTROL", "key-a"), true);
   store.revoke("device-a", "user-a", "MOUSE_CONTROL");
   assert.equal(store.has("device-a", "user-a", "SCREEN_VIEW", "key-a"), true);
+  store.grant("device-a", "user-a", "KEYBOARD_CONTROL", "key-a");
+  assert.equal(store.has("device-a", "user-a", "KEYBOARD_CONTROL", "key-a"), true);
+  store.revoke("device-a", "user-a", "KEYBOARD_CONTROL");
+  assert.equal(store.has("device-a", "user-a", "SCREEN_VIEW", "key-a"), true);
 });
 
 test("revocation disables trust without affecting another account", () => {

@@ -2,6 +2,7 @@ mod config;
 mod connection;
 mod consent;
 mod device;
+mod keyboard;
 mod logging;
 mod media;
 mod mouse;

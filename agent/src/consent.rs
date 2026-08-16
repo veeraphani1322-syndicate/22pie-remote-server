@@ -11,6 +11,13 @@ pub enum ConsentDecision {
     ExistingTrust,
 }
 
+#[derive(Clone, Copy)]
+enum ConsentKind {
+    Screen,
+    Mouse,
+    Keyboard,
+}
+
 const ALLOW_ONCE: i32 = 1001;
 const TRUST_ACCOUNT: i32 = 1002;
 const DENY: i32 = 1003;
@@ -24,13 +31,19 @@ fn decision_from_button(button: i32) -> ConsentDecision {
 }
 
 pub async fn request_screen_view(viewer_name: String, device_name: String) -> ConsentDecision {
-    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, false))
+    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, ConsentKind::Screen))
         .await
         .unwrap_or(ConsentDecision::Deny)
 }
 
 pub async fn request_mouse_control(viewer_name: String, device_name: String) -> ConsentDecision {
-    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, true))
+    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, ConsentKind::Mouse))
+        .await
+        .unwrap_or(ConsentDecision::Deny)
+}
+
+pub async fn request_keyboard_control(viewer_name: String, device_name: String) -> ConsentDecision {
+    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, ConsentKind::Keyboard))
         .await
         .unwrap_or(ConsentDecision::Deny)
 }
@@ -51,16 +64,16 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn prompt(viewer_name: &str, device_name: &str, mouse_control: bool) -> ConsentDecision {
-    try_task_dialog(viewer_name, device_name, mouse_control)
-        .unwrap_or_else(|| fallback_consent_window(viewer_name, device_name, mouse_control))
+fn prompt(viewer_name: &str, device_name: &str, kind: ConsentKind) -> ConsentDecision {
+    try_task_dialog(viewer_name, device_name, kind)
+        .unwrap_or_else(|| fallback_consent_window(viewer_name, device_name, kind))
 }
 
 #[cfg(windows)]
 fn try_task_dialog(
     viewer_name: &str,
     device_name: &str,
-    mouse_control: bool,
+    kind: ConsentKind,
 ) -> Option<ConsentDecision> {
     use windows_sys::Win32::Foundation::FreeLibrary;
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -86,26 +99,26 @@ fn try_task_dialog(
     let title = wide("22Pie Remote");
     let instruction = wide(&format!(
         "{viewer_name} is requesting {}.",
-        if mouse_control {
-            "remote mouse control"
-        } else {
-            "access to this computer"
+        match kind {
+            ConsentKind::Screen => "access to this computer",
+            ConsentKind::Mouse => "remote mouse control",
+            ConsentKind::Keyboard => "remote keyboard control",
         }
     ));
     let content = wide(&format!(
         "Computer: {device_name}\n\nRequested permissions:\nScreen viewing{}",
-        if mouse_control { "\nMouse control" } else { "" }
+        match kind {
+            ConsentKind::Screen => "",
+            ConsentKind::Mouse => "\nMouse control",
+            ConsentKind::Keyboard => "\nKeyboard control",
+        }
     ));
-    let allow = wide(if mouse_control {
-        "Allow Once\nAllow remote mouse control for only this session."
-    } else {
-        "Allow Once\nAllow screen viewing for only this session."
+    let allow = wide(match kind {
+        ConsentKind::Screen => "Allow Once\nAllow screen viewing for only this session.",
+        ConsentKind::Mouse => "Allow Once\nAllow remote mouse control for only this session.",
+        ConsentKind::Keyboard => "Allow Once\nAllow remote keyboard control for only this session.",
     });
-    let trust = wide(if mouse_control {
-        "Trust These Permissions\nAllow mouse control now and in future sessions until revoked."
-    } else {
-        "Trust This Account\nAllow now and future screen-view sessions until revoked."
-    });
+    let trust = wide(match kind { ConsentKind::Screen => "Trust This Account\nAllow now and future screen-view sessions until revoked.", ConsentKind::Mouse => "Trust These Permissions\nAllow mouse control now and in future sessions until revoked.", ConsentKind::Keyboard => "Trust These Permissions\nAllow keyboard control now and in future sessions until revoked." });
     let deny = wide("Deny\nDo not allow this session or save authorization.");
     let buttons = [
         TASKDIALOG_BUTTON {
@@ -150,7 +163,7 @@ fn try_task_dialog(
 fn fallback_consent_window(
     viewer_name: &str,
     device_name: &str,
-    mouse_control: bool,
+    kind: ConsentKind,
 ) -> ConsentDecision {
     use std::ffi::c_void;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -256,7 +269,7 @@ fn fallback_consent_window(
     unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, (&mut selected as *mut i32) as isize) };
     let static_class = wide("STATIC");
     let button_class = wide("BUTTON");
-    let message = wide(&format!("{viewer_name} is requesting {}.\n\nComputer: {device_name}\nRequested permissions: Screen viewing{}", if mouse_control { "remote mouse control" } else { "access to this computer" }, if mouse_control { ", Mouse control" } else { "" }));
+    let message = wide(&format!("{viewer_name} is requesting {}.\n\nComputer: {device_name}\nRequested permissions: Screen viewing{}", match kind { ConsentKind::Screen => "access to this computer", ConsentKind::Mouse => "remote mouse control", ConsentKind::Keyboard => "remote keyboard control" }, match kind { ConsentKind::Screen => "", ConsentKind::Mouse => ", Mouse control", ConsentKind::Keyboard => ", Keyboard control" }));
     unsafe {
         child(&static_class, &message, 0, 20, 18, 510, 100, window, 0);
         child(
@@ -272,10 +285,10 @@ fn fallback_consent_window(
         );
         child(
             &button_class,
-            &wide(if mouse_control {
-                "Trust These Permissions"
-            } else {
+            &wide(if matches!(kind, ConsentKind::Screen) {
                 "Trust This Account"
+            } else {
+                "Trust These Permissions"
             }),
             BS_PUSHBUTTON as u32,
             190,
@@ -312,7 +325,7 @@ fn fallback_consent_window(
 }
 
 #[cfg(not(windows))]
-fn prompt(_viewer_name: &str, _device_name: &str, _mouse_control: bool) -> ConsentDecision {
+fn prompt(_viewer_name: &str, _device_name: &str, _kind: ConsentKind) -> ConsentDecision {
     ConsentDecision::Deny
 }
 
@@ -383,6 +396,31 @@ pub fn show_mouse_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
         }
         let _ = stop.send(());
     });
+}
+
+#[cfg(windows)]
+pub fn show_keyboard_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
+    std::thread::spawn(move || {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
+        };
+        let title = wide("22Pie Remote — Keyboard control active");
+        let message=wide("Remote keyboard control is active.\n\nSelect OK to stop remote keyboard control. Screen viewing and mouse control will continue.");
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+            );
+        }
+        let _ = stop.send(());
+    });
+}
+
+#[cfg(not(windows))]
+pub fn show_keyboard_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
+    let _ = stop.send(());
 }
 
 #[cfg(not(windows))]

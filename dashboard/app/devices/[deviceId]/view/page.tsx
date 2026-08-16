@@ -4,6 +4,7 @@ import Link from "next/link";
 import { use, useEffect, useRef, useState } from "react";
 import { api, WS_URL } from "@/lib/api";
 import { normalizedVideoPoint, type Point } from "@/lib/mouse-control";
+import { isLocalKeyboardRelease, modifiersOf, shouldSendText } from "@/lib/keyboard-control";
 
 type ViewState = "requesting" | "awaiting" | "starting" | "negotiating" | "waiting_frame" | "streaming" | "rejected" | "ended" | "failed";
 interface Device { deviceId: string; deviceName: string; operatingSystem: string }
@@ -19,6 +20,7 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   const moveRef = useRef<Point | null>(null);
   const moveFrameRef = useRef<number | null>(null);
   const sequenceRef = useRef(0);
+  const heldKeysRef = useRef(new Set<string>());
   const peerConnectedAtRef = useRef(0);
   const [device, setDevice] = useState<Device | null>(null);
   const [state, setState] = useState<ViewState>("requesting");
@@ -27,6 +29,11 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   const [mouseAuthorized, setMouseAuthorized] = useState(false);
   const [mouseEnabled, setMouseEnabled] = useState(false);
   const [mouseRequesting, setMouseRequesting] = useState(false);
+  const [keyboardAuthorized, setKeyboardAuthorized] = useState(false);
+  const [keyboardEnabled, setKeyboardEnabled] = useState(false);
+  const [keyboardRequesting, setKeyboardRequesting] = useState(false);
+  const [keyboardCaptured, setKeyboardCaptured] = useState(false);
+  const [keyboardWarning, setKeyboardWarning] = useState("");
   const [controlChannel, setControlChannel] = useState<"connecting" | "connected" | "disconnected">("connecting");
 
   useEffect(() => {
@@ -74,8 +81,8 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
           if (channel.label !== "control") { channel.close(); return; }
           channelRef.current = channel;
           channel.onopen = () => { console.debug(`CONTROL_CHANNEL_STATE=OPEN sessionId=${sessionId}`); setControlChannel("connected"); };
-          channel.onclose = () => { console.debug(`CONTROL_CHANNEL_STATE=CLOSED sessionId=${sessionId}`); setControlChannel("disconnected"); setMouseEnabled(false); };
-          channel.onerror = () => { console.error(`CONTROL_CHANNEL_STATE=ERROR sessionId=${sessionId}`); setControlChannel("disconnected"); setMouseEnabled(false); };
+          channel.onclose = () => { console.debug(`CONTROL_CHANNEL_STATE=CLOSED sessionId=${sessionId}`); heldKeysRef.current.clear(); setControlChannel("disconnected"); setMouseEnabled(false); setKeyboardEnabled(false); setKeyboardCaptured(false); };
+          channel.onerror = () => { console.error(`CONTROL_CHANNEL_STATE=ERROR sessionId=${sessionId}`); heldKeysRef.current.clear(); setControlChannel("disconnected"); setMouseEnabled(false); setKeyboardEnabled(false); setKeyboardCaptured(false); };
         };
         peer.onicecandidate = ({ candidate }) => {
           if (!candidate) return;
@@ -109,6 +116,9 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
           if (message.type === "mouse_control_authorized") { setMouseAuthorized(true); setMouseEnabled(true); setMouseRequesting(false); }
           if (message.type === "mouse_control_rejected") { setMouseAuthorized(false); setMouseEnabled(false); setMouseRequesting(false); setError(String(message.reason ?? "Mouse control denied")); }
           if (message.type === "mouse_control_disabled") { setMouseEnabled(false); }
+          if (message.type === "keyboard_control_authorized") { setKeyboardAuthorized(true); setKeyboardEnabled(true); setKeyboardRequesting(false); }
+          if (message.type === "keyboard_control_rejected") { setKeyboardAuthorized(false); setKeyboardEnabled(false); setKeyboardRequesting(false); setKeyboardCaptured(false); setError(String(message.reason ?? "Keyboard control denied")); }
+          if (message.type === "keyboard_control_disabled") { setKeyboardEnabled(false); setKeyboardCaptured(false); heldKeysRef.current.clear(); }
           if (message.type === "webrtc_offer") {
             console.debug(`WEBRTC_OFFER_RECEIVED sessionId=${sessionId}`);
             setState("negotiating");
@@ -188,9 +198,30 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   }
   async function disableMouse() { const sessionId = sessionIdRef.current; setMouseEnabled(false); if (sessionId) await api(`/api/sessions/${sessionId}/mouse-control`, { method: "DELETE" }); }
 
+  function sendKeyboard(type: string, fields: Record<string, unknown>, force = false) {
+    const channel=channelRef.current; const sessionId=sessionIdRef.current;
+    if (!keyboardEnabled || !keyboardAuthorized || !sessionId || channel?.readyState!=="open") return false;
+    if (!force && channel.bufferedAmount > 256*1024) { setKeyboardWarning("Keyboard channel is congested. Release focus and retry."); return false; }
+    channel.send(JSON.stringify({ type, session_id:sessionId, ...fields, sequence:++sequenceRef.current, timestamp:performance.now() })); return true;
+  }
+  function releaseKeys() { for (const code of heldKeysRef.current) sendKeyboard("key_up",{code,key:code,modifiers:{alt:false,ctrl:false,meta:false,shift:false}},true); heldKeysRef.current.clear(); }
+  function keyboardDown(event: React.KeyboardEvent<HTMLVideoElement>) {
+    if (!keyboardEnabled || !keyboardCaptured) return;
+    if (isLocalKeyboardRelease(event.nativeEvent)) { event.preventDefault(); releaseKeys(); setKeyboardCaptured(false); videoRef.current?.blur(); return; }
+    event.preventDefault(); setKeyboardWarning("");
+    if (shouldSendText(event.nativeEvent)) { sendKeyboard("text_input",{text:event.key}); return; }
+    if (sendKeyboard("key_down",{code:event.code,key:event.key,repeat:event.repeat,modifiers:modifiersOf(event.nativeEvent)})) heldKeysRef.current.add(event.code);
+  }
+  function keyboardUp(event: React.KeyboardEvent<HTMLVideoElement>) {
+    if (!keyboardEnabled || !keyboardCaptured || !heldKeysRef.current.has(event.code)) return;
+    event.preventDefault(); sendKeyboard("key_up",{code:event.code,key:event.key,modifiers:modifiersOf(event.nativeEvent)},true); heldKeysRef.current.delete(event.code);
+  }
+  async function enableKeyboard() { const sessionId=sessionIdRef.current; if (!sessionId) return; setKeyboardRequesting(true); setError(""); try { const result=await api<{session:{permissions:string[]}}>(`/api/sessions/${sessionId}/keyboard-control`,{method:"POST"}); if(result.session.permissions.includes("KEYBOARD_CONTROL")){setKeyboardAuthorized(true);setKeyboardEnabled(true);setKeyboardRequesting(false);} } catch(reason){setKeyboardRequesting(false);setError(reason instanceof Error?reason.message:"Unable to request keyboard control");} }
+  async function disableKeyboard() { const sessionId=sessionIdRef.current; releaseKeys(); setKeyboardEnabled(false); setKeyboardCaptured(false); if(sessionId) await api(`/api/sessions/${sessionId}/keyboard-control`,{method:"DELETE"}); }
+
   const stateLabel = state === "waiting_frame" ? "Waiting for first frame" : state === "streaming" ? "Streaming" : state;
   return <main className="viewer"><header><Link href="/devices" className="back">← Devices</Link><div><strong>{device?.deviceName ?? "Remote device"}</strong><span className={`connection ${state}`}>{stateLabel}</span></div><button className="secondary" onClick={disconnect}>Disconnect</button></header>
-    <section className="screen"><video ref={videoRef} autoPlay playsInline onPlaying={videoPlaying} onMouseMove={mouseMove} onMouseDown={(event) => mouseButton(event, true)} onMouseUp={(event) => mouseButton(event, false)} onMouseLeave={releaseButtons} onContextMenu={(event) => mouseEnabled && event.preventDefault()} onWheel={mouseWheel} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}</section>
-    <footer><div><span>Resolution<strong>{stats.resolution}</strong></span><span>FPS<strong>{stats.fps}</strong></span><span>Bitrate<strong>{stats.bitrate}</strong></span><span>Network RTT<strong>{stats.networkRtt}</strong></span><span>Packet loss<strong>{stats.packetLoss}</strong></span><span>ICE route<strong>{stats.route}</strong></span><span>Protocol<strong>{stats.protocol}</strong></span><span>Control channel<strong>{controlChannel}</strong></span><span>Mouse Control<strong>{mouseEnabled ? "ON" : "OFF"}</strong></span></div>{mouseEnabled ? <button className="secondary" onClick={() => void disableMouse()}>Disable Mouse Control</button> : <button className="secondary" disabled={mouseRequesting || state !== "streaming" || controlChannel !== "connected"} onClick={() => void enableMouse()}>{mouseRequesting ? "Waiting for approval…" : "Enable Mouse Control"}</button>}<button className="secondary" onClick={() => void fullscreen()}>Fullscreen</button></footer>
+    <section className="screen"><video ref={videoRef} tabIndex={0} autoPlay playsInline onPlaying={videoPlaying} onClick={() => { if(keyboardEnabled){videoRef.current?.focus();setKeyboardCaptured(true);} }} onBlur={() => {releaseKeys();setKeyboardCaptured(false);}} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onMouseMove={mouseMove} onMouseDown={(event) => mouseButton(event, true)} onMouseUp={(event) => mouseButton(event, false)} onMouseLeave={releaseButtons} onContextMenu={(event) => mouseEnabled && event.preventDefault()} onWheel={mouseWheel} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}{keyboardEnabled && <div className="keyboard-status" role="status">Keyboard control {keyboardCaptured ? "captured — Ctrl+Alt+Esc releases" : "enabled — click the screen to capture"}{keyboardWarning && <p>{keyboardWarning}</p>}</div>}</section>
+    <footer><div><span>Resolution<strong>{stats.resolution}</strong></span><span>FPS<strong>{stats.fps}</strong></span><span>Bitrate<strong>{stats.bitrate}</strong></span><span>Network RTT<strong>{stats.networkRtt}</strong></span><span>Packet loss<strong>{stats.packetLoss}</strong></span><span>ICE route<strong>{stats.route}</strong></span><span>Protocol<strong>{stats.protocol}</strong></span><span>Control channel<strong>{controlChannel}</strong></span><span>Mouse Control<strong>{mouseEnabled ? "ON" : "OFF"}</strong></span><span>Keyboard Control<strong>{keyboardEnabled ? (keyboardCaptured ? "CAPTURED" : "ON") : "OFF"}</strong></span></div>{mouseEnabled ? <button className="secondary" onClick={() => void disableMouse()}>Disable Mouse Control</button> : <button className="secondary" disabled={mouseRequesting || state !== "streaming" || controlChannel !== "connected"} onClick={() => void enableMouse()}>{mouseRequesting ? "Waiting for approval…" : "Enable Mouse Control"}</button>}{keyboardEnabled ? <button className="secondary" onClick={() => void disableKeyboard()}>Disable Keyboard Control</button> : <button className="secondary" disabled={keyboardRequesting||state!=="streaming"||controlChannel!=="connected"} onClick={() => void enableKeyboard()}>{keyboardRequesting?"Waiting for approval…":"Enable Keyboard Control"}</button>}<button className="secondary" onClick={() => void fullscreen()}>Fullscreen</button></footer>
   </main>;
 }

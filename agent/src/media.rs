@@ -23,6 +23,7 @@ pub enum MediaCommand {
         sdp_m_line_index: Option<u16>,
     },
     SetMouseControl(bool),
+    SetKeyboardControl(bool),
     Stop,
 }
 
@@ -45,6 +46,7 @@ pub async fn start(ice_servers: Vec<IceServer>, session_id: String) -> Result<Me
 mod windows {
     use super::{MediaCommand, MediaEvent, MediaSession};
     use crate::{
+        keyboard::{KeyboardController, KeyboardMessage},
         mouse::{MouseController, MouseMessage},
         protocol::{IceServer, UrlList},
     };
@@ -110,6 +112,8 @@ mod windows {
         let peer = Arc::new(api.new_peer_connection(configuration).await?);
         let mouse_authorized = Arc::new(AtomicBool::new(false));
         let mouse = Arc::new(Mutex::new(MouseController::new()));
+        let keyboard_authorized = Arc::new(AtomicBool::new(false));
+        let keyboard = Arc::new(Mutex::new(KeyboardController::new()));
         let channel = peer.create_data_channel("control", None).await?;
         let opened_at = Instant::now();
         channel.on_open(Box::new(move || {
@@ -121,36 +125,66 @@ mod windows {
         }));
         let message_authorized = mouse_authorized.clone();
         let message_controller = mouse.clone();
+        let message_keyboard_authorized = keyboard_authorized.clone();
+        let message_keyboard = keyboard.clone();
         channel.on_message(Box::new(move |data: DataChannelMessage| {
             let authorized = message_authorized.clone();
             let controller = message_controller.clone();
+            let keyboard_authorized = message_keyboard_authorized.clone();
+            let keyboard = message_keyboard.clone();
             let expected_session_id = session_id.clone();
             Box::pin(async move {
-                if !data.is_string || !authorized.load(Ordering::Acquire) {
+                if !data.is_string {
                     return;
                 }
-                let Some(message) = MouseMessage::parse(&data.data) else {
+                let success = if authorized.load(Ordering::Acquire) {
+                    MouseMessage::parse(&data.data)
+                        .filter(|message| message.session_id() == expected_session_id)
+                        .map(|message| {
+                            controller
+                                .lock()
+                                .map(|mut mouse| mouse.execute(message))
+                                .unwrap_or(false)
+                        })
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    if !keyboard_authorized.load(Ordering::Acquire) {
+                        return None;
+                    }
+                    KeyboardMessage::parse(&data.data)
+                        .filter(|message| message.session_id() == expected_session_id)
+                        .map(|message| {
+                            keyboard
+                                .lock()
+                                .map(|mut keyboard| keyboard.execute(message))
+                                .unwrap_or(false)
+                        })
+                });
+                let Some(success) = success else {
                     return;
                 };
-                if message.session_id() != expected_session_id {
-                    return;
-                }
-                let success = controller
-                    .lock()
-                    .map(|mut mouse| mouse.execute(message))
-                    .unwrap_or(false);
                 if !success {
                     warn!(
                         SENDINPUT_FAILURES = 1,
-                        "Windows SendInput rejected mouse event"
+                        "Windows SendInput rejected control event"
                     );
                 }
             })
         }));
         let close_controller = mouse.clone();
+        let close_keyboard = keyboard.clone();
         channel.on_close(Box::new(move || {
             if let Ok(mut mouse) = close_controller.lock() {
                 mouse.release_all();
+            }
+            if let Ok(mut keyboard) = close_keyboard.lock() {
+                let released = keyboard.release_all();
+                info!(
+                    HELD_KEYS_RELEASED = released,
+                    "Released keyboard state on control-channel close"
+                );
             }
             Box::pin(async {})
         }));
@@ -266,11 +300,29 @@ mod windows {
                         }
                         Ok(())
                     }
+                    MediaCommand::SetKeyboardControl(enabled) => {
+                        keyboard_authorized.store(enabled, Ordering::Release);
+                        if !enabled {
+                            if let Ok(mut controller) = keyboard.lock() {
+                                let released = controller.release_all();
+                                info!(HELD_KEYS_RELEASED = released, "Released keyboard state");
+                            }
+                        }
+                        Ok(())
+                    }
                     MediaCommand::Stop => {
                         stopped.store(true, Ordering::SeqCst);
                         mouse_authorized.store(false, Ordering::Release);
+                        keyboard_authorized.store(false, Ordering::Release);
                         if let Ok(mut controller) = mouse.lock() {
                             controller.release_all();
+                        }
+                        if let Ok(mut controller) = keyboard.lock() {
+                            let released = controller.release_all();
+                            info!(
+                                HELD_KEYS_RELEASED = released,
+                                "Released keyboard state on session stop"
+                            );
                         }
                         let _ = command_peer.close().await;
                         break;

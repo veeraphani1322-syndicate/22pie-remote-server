@@ -122,6 +122,25 @@ test("mouse control is separately authorized and can be downgraded without endin
   sessions.end(session.sessionId, "test_cleanup");
 });
 
+test("keyboard control is independently authorized, trusted, and disabled without ending video", () => {
+  const { agent, sessions, trust } = fixture();
+  const viewer = fakeSocket();
+  const session = sessions.request("user-a", "device-a", "Viewer");
+  sessions.attachViewer(session.sessionId, "user-a", viewer);
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: session.sessionId });
+  sessions.markConnected(session.sessionId, "user-a");
+  sessions.requestKeyboardControl(session.sessionId, "user-a", "Viewer");
+  assert.deepEqual(agent.messages.at(-1), { type: "keyboard_control_requested", sessionId: session.sessionId, viewerUserId: "user-a", viewerName: "Viewer", trusted: false });
+  sessions.fromAgent("device-a", { type: "trust_grant", sessionId: session.sessionId, permission: "KEYBOARD_CONTROL" });
+  sessions.fromAgent("device-a", { type: "keyboard_control_accept", sessionId: session.sessionId });
+  assert.deepEqual(sessions.getOwned(session.sessionId, "user-a")?.permissions, ["SCREEN_VIEW", "KEYBOARD_CONTROL"]);
+  assert.equal(trust.has("device-a", "user-a", "KEYBOARD_CONTROL", "test-device-key"), true);
+  sessions.disableKeyboardControl(session.sessionId, "user-a");
+  assert.equal(sessions.getOwned(session.sessionId, "user-a")?.status, "connected");
+  assert.deepEqual(agent.messages.at(-1), { type: "keyboard_control_disabled", sessionId: session.sessionId });
+  sessions.end(session.sessionId, "test_cleanup");
+});
+
 test("buffers an early agent offer and bounded ICE until the viewer attaches", () => {
   const { agent, sessions } = fixture();
   const session = sessions.request("user-a", "device-a", "Viewer");
