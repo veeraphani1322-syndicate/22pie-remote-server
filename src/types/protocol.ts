@@ -62,7 +62,7 @@ export type ServerMessage =
   | { type: "auth_challenge"; nonce: string }
   | { type: "registered"; deviceId: string; status: "online" }
   | { type: "heartbeat_ack"; timestamp: string }
-  | { type: "session_requested"; sessionId: string; viewerUserId: string; viewerName: string; permissions: ["SCREEN_VIEW"]; trusted: boolean; iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }> }
+  | { type: "session_requested"; sessionId: string; viewerUserId: string; viewerName: string; permissions: ["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"]; trusted: boolean; iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }> }
   | { type: "mouse_control_requested"; sessionId: string; viewerUserId: string; viewerName: string; trusted: boolean }
   | { type: "mouse_control_enabled"; sessionId: string }
   | { type: "mouse_control_authorized"; sessionId: string }

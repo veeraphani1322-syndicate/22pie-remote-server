@@ -115,6 +115,23 @@ impl TrustedAccess {
         self.revoke_permission(server_url, user_id, KEYBOARD_CONTROL)
     }
 
+    pub fn has_remote_control(&self, server_url: &str, user_id: &str) -> bool {
+        self.has_screen_view(server_url, user_id)
+            && self.has_mouse_control(server_url, user_id)
+            && self.has_keyboard_control(server_url, user_id)
+    }
+
+    pub fn grant_remote_control(
+        &mut self,
+        server_url: &str,
+        user_id: &str,
+        viewer_name: &str,
+    ) -> Result<()> {
+        self.grant_screen_view(server_url, user_id, viewer_name)?;
+        self.grant_mouse_control(server_url, user_id, viewer_name)?;
+        self.grant_keyboard_control(server_url, user_id, viewer_name)
+    }
+
     fn has_permission(&self, server_url: &str, user_id: &str, permission: &str) -> bool {
         self.stored.grants.iter().any(|grant| {
             grant.server_url == server_url
@@ -242,5 +259,17 @@ mod tests {
         assert!(!access.has_screen_view("wss://two", "a"));
         access.stored.grants[0].permission = "MOUSE_CONTROL".into();
         assert!(!access.has_screen_view("wss://one", "a"));
+        assert!(!access.has_remote_control("wss://one", "a"));
+        for permission in [SCREEN_VIEW, KEYBOARD_CONTROL] {
+            access.stored.grants.push(LocalTrust {
+                server_url: "wss://one".into(),
+                user_id: "a".into(),
+                viewer_name: "A".into(),
+                permission: permission.into(),
+                created_at: "0".into(),
+            });
+        }
+        assert!(access.has_remote_control("wss://one", "a"));
+        assert!(!access.has_remote_control("wss://one", "b"));
     }
 }

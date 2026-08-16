@@ -14,6 +14,7 @@ enum ConsentKind {
     Screen,
     Mouse,
     Keyboard,
+    RemoteControl,
 }
 
 const ALLOW_ONCE: i32 = 1001;
@@ -79,6 +80,23 @@ pub async fn request_keyboard_control(
     .unwrap_or(ConsentDecision::Deny)
 }
 
+pub async fn request_remote_control(
+    viewer_name: String,
+    device_name: String,
+    window_title: String,
+) -> ConsentDecision {
+    tokio::task::spawn_blocking(move || {
+        prompt(
+            &viewer_name,
+            &device_name,
+            &window_title,
+            ConsentKind::RemoteControl,
+        )
+    })
+    .await
+    .unwrap_or(ConsentDecision::Deny)
+}
+
 #[cfg(windows)]
 fn wide(value: &str) -> Vec<u16> {
     std::ffi::OsStr::new(value)
@@ -133,6 +151,7 @@ fn try_task_dialog(
             ConsentKind::Screen => "access to this computer",
             ConsentKind::Mouse => "remote mouse control",
             ConsentKind::Keyboard => "remote keyboard control",
+            ConsentKind::RemoteControl => "remote access to this computer",
         }
     ));
     let content = wide(&format!(
@@ -141,14 +160,18 @@ fn try_task_dialog(
             ConsentKind::Screen => "",
             ConsentKind::Mouse => "\nMouse control",
             ConsentKind::Keyboard => "\nKeyboard control",
+            ConsentKind::RemoteControl => "\nMouse control\nKeyboard control",
         }
     ));
     let allow = wide(match kind {
         ConsentKind::Screen => "Allow Once\nAllow screen viewing for only this session.",
         ConsentKind::Mouse => "Allow Once\nAllow remote mouse control for only this session.",
         ConsentKind::Keyboard => "Allow Once\nAllow remote keyboard control for only this session.",
+        ConsentKind::RemoteControl => {
+            "Allow Once\nAllow screen, mouse, and keyboard access for only this session."
+        }
     });
-    let trust = wide(match kind { ConsentKind::Screen => "Trust This Account\nAllow now and future screen-view sessions until revoked.", ConsentKind::Mouse => "Trust These Permissions\nAllow mouse control now and in future sessions until revoked.", ConsentKind::Keyboard => "Trust These Permissions\nAllow keyboard control now and in future sessions until revoked." });
+    let trust = wide(match kind { ConsentKind::Screen => "Trust This Account\nAllow now and future screen-view sessions until revoked.", ConsentKind::Mouse => "Trust These Permissions\nAllow mouse control now and in future sessions until revoked.", ConsentKind::Keyboard => "Trust These Permissions\nAllow keyboard control now and in future sessions until revoked.", ConsentKind::RemoteControl => "Trust This Account\nAllow screen, mouse, and keyboard access now and until revoked." });
     let deny = wide("Deny\nDo not allow this session or save authorization.");
     let buttons = [
         TASKDIALOG_BUTTON {
@@ -300,7 +323,7 @@ fn fallback_consent_window(
     unsafe { SetWindowLongPtrW(window, GWLP_USERDATA, (&mut selected as *mut i32) as isize) };
     let static_class = wide("STATIC");
     let button_class = wide("BUTTON");
-    let message = wide(&format!("{viewer_name} is requesting {}.\n\nComputer: {device_name}\nRequested permissions: Screen viewing{}", match kind { ConsentKind::Screen => "access to this computer", ConsentKind::Mouse => "remote mouse control", ConsentKind::Keyboard => "remote keyboard control" }, match kind { ConsentKind::Screen => "", ConsentKind::Mouse => ", Mouse control", ConsentKind::Keyboard => ", Keyboard control" }));
+    let message = wide(&format!("{viewer_name} is requesting {}.\n\nComputer: {device_name}\nRequested permissions: Screen viewing{}", match kind { ConsentKind::Screen => "access to this computer", ConsentKind::Mouse => "remote mouse control", ConsentKind::Keyboard => "remote keyboard control", ConsentKind::RemoteControl => "remote access to this computer" }, match kind { ConsentKind::Screen => "", ConsentKind::Mouse => ", Mouse control", ConsentKind::Keyboard => ", Keyboard control", ConsentKind::RemoteControl => ", Mouse control, Keyboard control" }));
     unsafe {
         child(&static_class, &message, 0, 20, 18, 510, 100, window, 0);
         child(

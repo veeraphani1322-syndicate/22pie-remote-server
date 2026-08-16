@@ -11,6 +11,7 @@ interface Device {
   trustedScreenAccess: boolean;
   trustedMouseControl: boolean;
   trustedKeyboardControl: boolean;
+  trustedRemoteControl: boolean;
   trustedAccess?: { permission: "SCREEN_VIEW"; createdAt: string; userEmail: string };
 }
 type PageState = "loading" | "ready" | "unauthorized" | "unavailable";
@@ -56,20 +57,10 @@ export default function DevicesPage() {
     finally { router.replace("/login"); }
   }
 
-  async function revokeTrust(deviceId: string) {
-    if (!window.confirm("Revoke trusted screen access? Future sessions will require approval on the remote computer.")) return;
-    await api(`/api/devices/${deviceId}/trusted-access/SCREEN_VIEW`, { method: "DELETE" });
-    setDevices((current) => current.map((device) => device.deviceId === deviceId ? { ...device, trustedScreenAccess: false } : device));
-  }
-  async function revokeMouseTrust(deviceId: string) {
-    if (!window.confirm("Revoke trusted mouse control? Screen-view trust will remain unchanged.")) return;
-    await api(`/api/devices/${deviceId}/trusted-access/MOUSE_CONTROL`, { method: "DELETE" });
-    setDevices((current) => current.map((device) => device.deviceId === deviceId ? { ...device, trustedMouseControl: false } : device));
-  }
-  async function revokeKeyboardTrust(deviceId: string) {
-    if (!window.confirm("Revoke trusted keyboard control? Screen and mouse trust remain unchanged.")) return;
-    await api(`/api/devices/${deviceId}/trusted-access/KEYBOARD_CONTROL`, { method: "DELETE" });
-    setDevices((current) => current.map((device) => device.deviceId === deviceId ? { ...device, trustedKeyboardControl: false } : device));
+  async function revokeRemoteControl(deviceId: string) {
+    if (!window.confirm("Revoke trusted remote control? The next connection will require approval on Windows.")) return;
+    await api(`/api/devices/${deviceId}/trusted-access/REMOTE_CONTROL`, { method: "DELETE" });
+    setDevices((current) => current.map((device) => device.deviceId === deviceId ? { ...device, trustedScreenAccess: false, trustedMouseControl: false, trustedKeyboardControl: false, trustedRemoteControl: false } : device));
   }
 
   return <main className="shell"><header><div className="brand">22Pie <span>Remote</span></div><div className="header-actions"><div className="secure">● Secure console</div><button className="text-button" onClick={() => void logout()}>Sign out</button></div></header>
@@ -81,9 +72,7 @@ export default function DevicesPage() {
     {state === "ready" && devices.length > 0 && <div className="device-grid">{devices.map((device) => <article className="device-card" key={device.deviceId}>
       <div className="device-icon">▣</div><div><h2>{device.deviceName}</h2><p>{device.operatingSystem}</p><p>Agent {device.agentVersion}</p></div>
       <div className={`status ${device.status}`}><i />{device.status === "online" ? "Online" : "Offline"}</div>
-      {device.trustedScreenAccess && <div><p>Trusted Screen Access ✓</p><p>Trusted for: {device.trustedAccess?.userEmail}</p><p>Granted: {device.trustedAccess ? new Date(device.trustedAccess.createdAt).toLocaleString() : "—"}</p><button className="text-button" onClick={() => void revokeTrust(device.deviceId)}>Revoke</button></div>}
-      {device.trustedMouseControl && <div><p>Trusted Mouse Control ✓</p><button className="text-button" onClick={() => void revokeMouseTrust(device.deviceId)}>Revoke Mouse Trust</button></div>}
-      {device.trustedKeyboardControl && <div><p>Trusted Keyboard Control ✓</p><button className="text-button" onClick={() => void revokeKeyboardTrust(device.deviceId)}>Revoke Keyboard Trust</button></div>}
+      {device.trustedRemoteControl && <div><p>Trusted Remote Control ✓</p><p>Trusted for: {device.trustedAccess?.userEmail}</p><p>Granted: {device.trustedAccess ? new Date(device.trustedAccess.createdAt).toLocaleString() : "—"}</p><button className="text-button" onClick={() => void revokeRemoteControl(device.deviceId)}>Revoke Remote Control Trust</button></div>}
       {device.status === "online" ? <Link className="action" href={`/devices/${device.deviceId}/view`}>View screen</Link> : <span className="action disabled">View screen</span>}
     </article>)}</div>}
   </main>;

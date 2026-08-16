@@ -24,12 +24,28 @@ pub enum MediaCommand {
     },
     SetMouseControl(bool),
     SetKeyboardControl(bool),
-    Stop,
+    Stop {
+        complete: tokio::sync::oneshot::Sender<()>,
+    },
 }
 
 pub struct MediaSession {
     pub events: mpsc::Receiver<MediaEvent>,
     pub commands: mpsc::Sender<MediaCommand>,
+}
+
+impl MediaSession {
+    pub async fn stop(self) {
+        let (complete, done) = tokio::sync::oneshot::channel();
+        if self
+            .commands
+            .send(MediaCommand::Stop { complete })
+            .await
+            .is_ok()
+        {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), done).await;
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -119,7 +135,7 @@ mod windows {
         channel.on_open(Box::new(move || {
             info!(
                 CONTROL_CHANNEL_OPEN_MS = opened_at.elapsed().as_millis(),
-                "Mouse control channel opened"
+                "CONTROL_CHANNEL_OPEN"
             );
             Box::pin(async {})
         }));
@@ -310,7 +326,7 @@ mod windows {
                         }
                         Ok(())
                     }
-                    MediaCommand::Stop => {
+                    MediaCommand::Stop { complete } => {
                         stopped.store(true, Ordering::SeqCst);
                         mouse_authorized.store(false, Ordering::Release);
                         keyboard_authorized.store(false, Ordering::Release);
@@ -325,6 +341,8 @@ mod windows {
                             );
                         }
                         let _ = command_peer.close().await;
+                        info!("MEDIA_STOP_COMPLETE");
+                        let _ = complete.send(());
                         break;
                     }
                 };

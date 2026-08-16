@@ -32,6 +32,12 @@ enum IncomingMessage {
     ControlFrame,
 }
 
+async fn stop_media(media: &mut Option<MediaSession>) {
+    if let Some(session) = media.take() {
+        session.stop().await;
+    }
+}
+
 fn cancel_pending_mouse_consent(pending: &mut Option<String>, message: &ServerMessage) -> bool {
     if matches!(message, ServerMessage::SessionEnded { session_id, .. } if pending.as_deref() == Some(session_id))
     {
@@ -209,6 +215,7 @@ where
         tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
+                    stop_media(&mut media).await;
                     writer.send(Message::Close(None)).await.ok();
                     writer.close().await.ok();
                     return Ok(ConnectionEnd::Shutdown);
@@ -239,19 +246,20 @@ where
                     }
                     IncomingMessage::Protocol(ServerMessage::SessionRequested { session_id, viewer_user_id, viewer_name, permissions, trusted, ice_servers }) => {
                         info!(%session_id, "Screen-view session request received");
-                        if consent_pending.is_some() || media.is_some() || permissions != vec![crate::protocol::Permission::ScreenView] {
+                        let remote_control = vec![crate::protocol::Permission::ScreenView, crate::protocol::Permission::MouseControl, crate::protocol::Permission::KeyboardControl];
+                        if consent_pending.is_some() || media.is_some() || permissions != remote_control {
                             send(&mut writer, &AgentMessage::SessionReject { session_id: &session_id, reason: "another_request_pending" }).await?;
                         } else {
                             consent_pending = Some(session_id.clone());
                             consent_started_at = Some(Instant::now());
-                            if trusted && trusted_access.has_screen_view(&config.server_url, &viewer_user_id) {
+                            if trusted && trusted_access.has_remote_control(&config.server_url, &viewer_user_id) {
                                 let _ = consent_tx.send((session_id, viewer_user_id, viewer_name, ConsentDecision::ExistingTrust, ice_servers)).await;
                             } else {
                                 let tx = consent_tx.clone();
                                 let device_name = device.device_name.clone();
                                 let window_title = config.window_title.clone();
                                 tokio::spawn(async move {
-                                    let decision = crate::consent::request_screen_view(viewer_name.clone(), device_name, window_title).await;
+                                    let decision = crate::consent::request_remote_control(viewer_name.clone(), device_name, window_title).await;
                                     let _ = tx.send((session_id, viewer_user_id, viewer_name, decision, ice_servers)).await;
                                 });
                             }
@@ -304,6 +312,7 @@ where
                     }
                     IncomingMessage::Protocol(ServerMessage::WebrtcAnswer { session_id, sdp }) => {
                         if active_session_id.as_deref() == Some(&session_id) {
+                            debug!(%session_id, "WEBRTC_ANSWER_RECEIVED");
                             if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Answer(sdp)).await; }
                         }
                     }
@@ -319,8 +328,8 @@ where
                             info!(%session_id, %reason, "Pending screen-sharing consent cancelled");
                         }
                         if active_session_id.as_deref() == Some(&session_id) {
-                            if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Stop).await; }
-                            media = None; active_session_id = None;
+                            stop_media(&mut media).await; active_session_id = None;
+                            info!(%session_id, "SESSION_IDLE");
                             info!(%session_id, %reason, "Screen sharing ended");
                         }
                     }
@@ -338,7 +347,7 @@ where
                     }
                     IncomingMessage::Protocol(other) => debug!(?other, "Ignoring unexpected server message"),
                     IncomingMessage::ControlFrame => {}
-                    IncomingMessage::Closed => return Ok(ConnectionEnd::Disconnected),
+                    IncomingMessage::Closed => { stop_media(&mut media).await; return Ok(ConnectionEnd::Disconnected); },
                 }
             }
             consent = consent_rx.recv() => {
@@ -353,13 +362,17 @@ where
                     }
                     if decision != ConsentDecision::Deny {
                         if decision == ConsentDecision::TrustAccount {
-                            trusted_access.grant_screen_view(&config.server_url, &viewer_user_id, &viewer_name)?;
-                            send(&mut writer, &AgentMessage::TrustGrant { session_id: &session_id, permission: crate::protocol::Permission::ScreenView }).await?;
+                            trusted_access.grant_remote_control(&config.server_url, &viewer_user_id, &viewer_name)?;
+                            for permission in [crate::protocol::Permission::ScreenView, crate::protocol::Permission::MouseControl, crate::protocol::Permission::KeyboardControl] {
+                                send(&mut writer, &AgentMessage::TrustGrant { session_id: &session_id, permission }).await?;
+                            }
                         }
                         let media_started_at = Instant::now();
                         match crate::media::start(ice_servers, session_id.clone()).await {
                             Ok(started) => {
                                 debug!(MEDIA_STARTUP_MS = media_started_at.elapsed().as_millis(), %session_id, "Screen media initialized");
+                                let _ = started.commands.send(MediaCommand::SetMouseControl(true)).await;
+                                let _ = started.commands.send(MediaCommand::SetKeyboardControl(true)).await;
                                 active_session_id = Some(session_id.clone()); media = Some(started);
                                 send(&mut writer, &AgentMessage::SessionAccept { session_id: &session_id }).await?;
                             }
@@ -404,12 +417,13 @@ where
             event = async { match media.as_mut() { Some(media) => media.events.recv().await, None => pending().await } } => {
                 if let (Some(event), Some(session_id)) = (event, active_session_id.clone()) {
                     match event {
-                        MediaEvent::Offer(sdp) => send(&mut writer, &AgentMessage::WebrtcOffer { session_id: &session_id, sdp: &sdp }).await?,
+                        MediaEvent::Offer(sdp) => { debug!(%session_id, "WEBRTC_OFFER_GENERATED"); send(&mut writer, &AgentMessage::WebrtcOffer { session_id: &session_id, sdp: &sdp }).await?; },
                         MediaEvent::IceCandidate { candidate, sdp_mid, sdp_m_line_index } => send(&mut writer, &AgentMessage::IceCandidate { session_id: &session_id, candidate: &candidate, sdp_mid: sdp_mid.as_deref(), sdp_m_line_index }).await?,
-                        MediaEvent::Connected => info!(%session_id, "Screen viewer connected"),
+                        MediaEvent::Connected => info!(%session_id, "PEER_CONNECTED"),
                         MediaEvent::Ended(reason) => {
                             send(&mut writer, &AgentMessage::SessionEnd { session_id: &session_id, reason: &reason }).await?;
-                            media = None; active_session_id = None;
+                            stop_media(&mut media).await; active_session_id = None;
+                            info!(%session_id, "SESSION_IDLE");
                         }
                     }
                 }

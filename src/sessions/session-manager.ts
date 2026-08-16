@@ -27,6 +27,7 @@ interface SessionRecord extends SessionView {
 }
 
 const MAX_PENDING_ICE_CANDIDATES = 64;
+const REMOTE_CONTROL_PERMISSIONS = ["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"] as const;
 
 function send(socket: WebSocket | undefined, message: ServerMessage): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
@@ -48,17 +49,17 @@ export class SessionManager {
     const agent = this.devices.socketFor(deviceId);
     if (!agent) throw new Error("DEVICE_OFFLINE");
     const sessionId = randomUUID();
-    const trusted = this.trustedAccess.has(deviceId, userId, "SCREEN_VIEW", this.devices.publicKeyFor(deviceId));
+    const trusted = this.trustedAccess.hasRemoteControl(deviceId, userId, this.devices.publicKeyFor(deviceId));
     const record: SessionRecord = {
-      sessionId, userId, deviceId, status: "requested", permissions: ["SCREEN_VIEW"],
+      sessionId, userId, deviceId, status: "requested", permissions: [...REMOTE_CONTROL_PERMISSIONS],
       requestedAt: new Date().toISOString(), trusted,
       pendingAgentCandidates: [],
       timeout: setTimeout(() => this.end(sessionId, "approval_timeout", "expired"), this.approvalTimeoutMs),
     };
     record.timeout.unref();
     this.sessions.set(sessionId, record);
-    this.audit({ event: trusted ? "TRUST_USED" : "TRUST_REQUESTED", deviceId, userId, permission: "SCREEN_VIEW" }, trusted ? "Trusted access used" : "Trusted access requested");
-    send(agent, { type: "session_requested", sessionId, viewerUserId: userId, viewerName, permissions: ["SCREEN_VIEW"], trusted, iceServers: this.iceServers });
+    this.audit({ event: "SESSION_CREATED", sessionId, deviceId, userId, trusted, permissions: REMOTE_CONTROL_PERMISSIONS }, "Remote-control session created");
+    send(agent, { type: "session_requested", sessionId, viewerUserId: userId, viewerName, permissions: [...REMOTE_CONTROL_PERMISSIONS], trusted, iceServers: this.iceServers });
     return this.view(record);
   }
 
@@ -264,6 +265,7 @@ export class SessionManager {
     clearTimeout(session.timeout);
     session.status = status;
     session.endedAt = new Date().toISOString();
+    this.audit({ event: "SESSION_END", sessionId, deviceId: session.deviceId, userId: session.userId, reason, status }, "Remote-control session ended");
     delete session.pendingOffer;
     session.pendingAgentCandidates = [];
     send(session.viewer, status === "rejected"

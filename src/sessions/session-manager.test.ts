@@ -53,13 +53,13 @@ test("only device-granted trust makes a later session trusted", () => {
   const { agent, sessions, trust } = fixture();
   const first = sessions.request("user-a", "device-a", "Viewer");
   assert.equal(first.trusted, false);
-  sessions.fromAgent("device-a", { type: "trust_grant", sessionId: first.sessionId, permission: "SCREEN_VIEW" });
+  for (const permission of ["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"] as const) sessions.fromAgent("device-a", { type: "trust_grant", sessionId: first.sessionId, permission });
   sessions.fromAgent("device-a", { type: "session_accept", sessionId: first.sessionId });
   sessions.end(first.sessionId, "test");
 
   const second = sessions.request("user-a", "device-a", "Viewer");
   assert.equal(second.trusted, true);
-  assert.equal(trust.has("device-a", "user-a", "SCREEN_VIEW", "test-device-key"), true);
+  assert.equal(trust.hasRemoteControl("device-a", "user-a", "test-device-key"), true);
   assert.equal((agent.messages.at(-1) as { trusted?: boolean }).trusted, true);
   sessions.end(second.sessionId, "test");
 });
@@ -103,42 +103,20 @@ test("a new session can be requested after the previous viewer disconnects", () 
   sessions.end(second.sessionId, "test_cleanup");
 });
 
-test("mouse control is separately authorized and can be downgraded without ending video", () => {
+test("remote-control sessions request all permissions and require complete trust", () => {
   const { agent, sessions, trust } = fixture();
-  const viewer = fakeSocket();
-  const session = sessions.request("user-a", "device-a", "Viewer");
-  sessions.attachViewer(session.sessionId, "user-a", viewer);
-  sessions.fromAgent("device-a", { type: "session_accept", sessionId: session.sessionId });
-  sessions.markConnected(session.sessionId, "user-a");
-  sessions.requestMouseControl(session.sessionId, "user-a", "Viewer");
-  assert.deepEqual(agent.messages.at(-1), { type: "mouse_control_requested", sessionId: session.sessionId, viewerUserId: "user-a", viewerName: "Viewer", trusted: false });
-  sessions.fromAgent("device-a", { type: "trust_grant", sessionId: session.sessionId, permission: "MOUSE_CONTROL" });
-  sessions.fromAgent("device-a", { type: "mouse_control_accept", sessionId: session.sessionId });
-  assert.deepEqual(sessions.getOwned(session.sessionId, "user-a")?.permissions, ["SCREEN_VIEW", "MOUSE_CONTROL"]);
-  assert.equal(trust.has("device-a", "user-a", "MOUSE_CONTROL", "test-device-key"), true);
-  sessions.disableMouseControl(session.sessionId, "user-a");
-  assert.deepEqual(sessions.getOwned(session.sessionId, "user-a")?.permissions, ["SCREEN_VIEW", "MOUSE_CONTROL"]);
-  assert.equal(sessions.getOwned(session.sessionId, "user-a")?.status, "connected");
-  sessions.end(session.sessionId, "test_cleanup");
-});
-
-test("keyboard control is independently authorized, trusted, and disabled without ending video", () => {
-  const { agent, sessions, trust } = fixture();
-  const viewer = fakeSocket();
-  const session = sessions.request("user-a", "device-a", "Viewer");
-  sessions.attachViewer(session.sessionId, "user-a", viewer);
-  sessions.fromAgent("device-a", { type: "session_accept", sessionId: session.sessionId });
-  sessions.markConnected(session.sessionId, "user-a");
-  sessions.requestKeyboardControl(session.sessionId, "user-a", "Viewer");
-  assert.deepEqual(agent.messages.at(-1), { type: "keyboard_control_requested", sessionId: session.sessionId, viewerUserId: "user-a", viewerName: "Viewer", trusted: false });
-  sessions.fromAgent("device-a", { type: "trust_grant", sessionId: session.sessionId, permission: "KEYBOARD_CONTROL" });
-  sessions.fromAgent("device-a", { type: "keyboard_control_accept", sessionId: session.sessionId });
-  assert.deepEqual(sessions.getOwned(session.sessionId, "user-a")?.permissions, ["SCREEN_VIEW", "KEYBOARD_CONTROL"]);
-  assert.equal(trust.has("device-a", "user-a", "KEYBOARD_CONTROL", "test-device-key"), true);
-  sessions.disableKeyboardControl(session.sessionId, "user-a");
-  assert.equal(sessions.getOwned(session.sessionId, "user-a")?.status, "connected");
-  assert.deepEqual(agent.messages.at(-1), { type: "keyboard_control_disabled", sessionId: session.sessionId });
-  sessions.end(session.sessionId, "test_cleanup");
+  trust.grant("device-a", "user-a", "SCREEN_VIEW", "test-device-key");
+  const partial = sessions.request("user-a", "device-a", "Viewer");
+  assert.equal(partial.trusted, false);
+  assert.deepEqual(partial.permissions, ["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"]);
+  assert.equal((agent.messages.at(-1) as { trusted: boolean }).trusted, false);
+  for (const permission of ["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"] as const) sessions.fromAgent("device-a", { type: "trust_grant", sessionId: partial.sessionId, permission });
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: partial.sessionId });
+  sessions.end(partial.sessionId, "test_cleanup");
+  const trusted = sessions.request("user-a", "device-a", "Viewer");
+  assert.equal(trusted.trusted, true);
+  assert.equal(trust.hasRemoteControl("device-a", "user-a", "test-device-key"), true);
+  sessions.end(trusted.sessionId, "test_cleanup");
 });
 
 test("buffers an early agent offer and bounded ICE until the viewer attaches", () => {
@@ -164,10 +142,10 @@ test("buffers an early agent offer and bounded ICE until the viewer attaches", (
   assert.equal(agent.messages.at(-1) && (agent.messages.at(-1) as { sessionId?: string }).sessionId, session.sessionId);
 });
 
-test("five immediate reconnect cycles use fresh session-scoped signaling", () => {
+test("ten immediate reconnect cycles use fresh combined-trust session signaling", () => {
   const { agent, sessions } = fixture();
   let previousSessionId: string | undefined;
-  for (let cycle = 0; cycle < 5; cycle += 1) {
+  for (let cycle = 0; cycle < 10; cycle += 1) {
     const session = sessions.request("user-a", "device-a", "Viewer");
     assert.notEqual(session.sessionId, previousSessionId);
     sessions.fromAgent("device-a", { type: "session_accept", sessionId: session.sessionId });
@@ -199,4 +177,22 @@ test("ended session signaling is cleared and never delivered to a new session", 
   sessions.flushPendingViewerSignaling(second.sessionId, "user-a", viewer);
   assert.deepEqual(viewer.messages, []);
   sessions.end(second.sessionId, "test_cleanup");
+});
+
+test("a failed negotiation is terminal and an immediate fresh session can connect", () => {
+  const { sessions } = fixture();
+  const failed = sessions.request("user-a", "device-a", "Viewer");
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: failed.sessionId });
+  sessions.fromAgent("device-a", { type: "webrtc_offer", sessionId: failed.sessionId, sdp: "failed-offer" });
+  sessions.end(failed.sessionId, "webrtc_failed", "failed");
+  const recovered = sessions.request("user-a", "device-a", "Viewer");
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: recovered.sessionId });
+  sessions.fromAgent("device-a", { type: "webrtc_offer", sessionId: recovered.sessionId, sdp: "fresh-offer" });
+  const viewer = fakeSocket();
+  sessions.attachViewer(recovered.sessionId, "user-a", viewer);
+  sessions.flushPendingViewerSignaling(recovered.sessionId, "user-a", viewer);
+  assert.deepEqual(viewer.messages, [{ type: "webrtc_offer", sessionId: recovered.sessionId, sdp: "fresh-offer" }]);
+  sessions.fromViewer(recovered.sessionId, "user-a", { type: "session_connected", sessionId: recovered.sessionId });
+  assert.equal(sessions.getOwned(recovered.sessionId, "user-a")?.status, "connected");
+  sessions.end(recovered.sessionId, "test_cleanup");
 });

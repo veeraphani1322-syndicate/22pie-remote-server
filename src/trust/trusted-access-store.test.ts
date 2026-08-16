@@ -33,3 +33,15 @@ test("revocation disables trust without affecting another account", () => {
   assert.equal(store.has("device-a", "user-a", "SCREEN_VIEW", "key-a"), false);
   assert.equal(store.has("device-a", "user-b", "SCREEN_VIEW", "key-a"), true);
 });
+
+test("remote-control trust requires and revokes the complete permission bundle", () => {
+  const store = fixture();
+  store.grant("device-a", "user-a", "SCREEN_VIEW", "key-a");
+  assert.equal(store.hasRemoteControl("device-a", "user-a", "key-a"), false);
+  store.grantRemoteControl("device-a", "user-a", "key-a");
+  assert.equal(store.hasRemoteControl("device-a", "user-a", "key-a"), true);
+  assert.equal(store.hasRemoteControl("device-a", "user-b", "key-a"), false);
+  assert.equal(store.hasRemoteControl("device-a", "user-a", "wrong-key"), false);
+  assert.equal(store.revokeRemoteControl("device-a", "user-a").length, 3);
+  assert.equal(store.hasRemoteControl("device-a", "user-a", "key-a"), false);
+});

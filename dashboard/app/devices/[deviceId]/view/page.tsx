@@ -5,6 +5,7 @@ import { use, useEffect, useRef, useState } from "react";
 import { api, WS_URL } from "@/lib/api";
 import { normalizedVideoPoint, type Point } from "@/lib/mouse-control";
 import { isLocalKeyboardRelease, modifiersOf, shouldSendText } from "@/lib/keyboard-control";
+import { hasCompleteRemoteControl } from "@/lib/remote-control";
 
 type ViewState = "requesting" | "awaiting" | "starting" | "negotiating" | "waiting_frame" | "streaming" | "rejected" | "ended" | "failed";
 interface Device { deviceId: string; deviceName: string; operatingSystem: string }
@@ -28,10 +29,8 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   const [error, setError] = useState("");
   const [mouseAuthorized, setMouseAuthorized] = useState(false);
   const [mouseEnabled, setMouseEnabled] = useState(false);
-  const [mouseRequesting, setMouseRequesting] = useState(false);
   const [keyboardAuthorized, setKeyboardAuthorized] = useState(false);
   const [keyboardEnabled, setKeyboardEnabled] = useState(false);
-  const [keyboardRequesting, setKeyboardRequesting] = useState(false);
   const [keyboardCaptured, setKeyboardCaptured] = useState(false);
   const [keyboardWarning, setKeyboardWarning] = useState("");
   const [controlChannel, setControlChannel] = useState<"connecting" | "connected" | "disconnected">("connecting");
@@ -46,13 +45,15 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
       try {
         const [deviceResult, created] = await Promise.all([
           api<Device>(`/api/devices/${deviceId}`),
-          api<{ session: { sessionId: string; trusted: boolean }; iceServers: IceServer[] }>(`/api/devices/${deviceId}/sessions`, { method: "POST" }),
+          api<{ session: { sessionId: string; trusted: boolean; permissions: string[] }; iceServers: IceServer[] }>(`/api/devices/${deviceId}/sessions`, { method: "POST" }),
         ]);
         if (!active) return;
         setDevice(deviceResult); setState(created.session.trusted ? "starting" : "awaiting");
         console.debug(`SESSION_REQUEST_MS=${(performance.now() - requestStartedAt).toFixed(1)}`);
         const sessionId = created.session.sessionId;
         sessionIdRef.current = sessionId;
+        const remoteControl = hasCompleteRemoteControl(created.session.permissions);
+        setMouseAuthorized(remoteControl); setMouseEnabled(remoteControl); setKeyboardAuthorized(remoteControl); setKeyboardEnabled(remoteControl);
         const peer = new RTCPeerConnection({ iceServers: created.iceServers });
         peerRef.current = peer;
         const socket = new WebSocket(`${WS_URL}/viewer?sessionId=${encodeURIComponent(sessionId)}`);
@@ -113,11 +114,11 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
           if (message.type === "session_accepted") setState("starting");
           if (message.type === "session_rejected") { setState("rejected"); setError(String(message.reason ?? "The remote user denied the request.")); }
           if (message.type === "session_ended") { setState("ended"); setError(String(message.reason ?? "Session ended")); peer.close(); }
-          if (message.type === "mouse_control_authorized") { setMouseAuthorized(true); setMouseEnabled(true); setMouseRequesting(false); }
-          if (message.type === "mouse_control_rejected") { setMouseAuthorized(false); setMouseEnabled(false); setMouseRequesting(false); setError(String(message.reason ?? "Mouse control denied")); }
+          if (message.type === "mouse_control_authorized") { setMouseAuthorized(true); setMouseEnabled(true); }
+          if (message.type === "mouse_control_rejected") { setMouseAuthorized(false); setMouseEnabled(false); setError(String(message.reason ?? "Mouse control denied")); }
           if (message.type === "mouse_control_disabled") { setMouseEnabled(false); }
-          if (message.type === "keyboard_control_authorized") { setKeyboardAuthorized(true); setKeyboardEnabled(true); setKeyboardRequesting(false); }
-          if (message.type === "keyboard_control_rejected") { setKeyboardAuthorized(false); setKeyboardEnabled(false); setKeyboardRequesting(false); setKeyboardCaptured(false); setError(String(message.reason ?? "Keyboard control denied")); }
+          if (message.type === "keyboard_control_authorized") { setKeyboardAuthorized(true); setKeyboardEnabled(true); }
+          if (message.type === "keyboard_control_rejected") { setKeyboardAuthorized(false); setKeyboardEnabled(false); setKeyboardCaptured(false); setError(String(message.reason ?? "Keyboard control denied")); }
           if (message.type === "keyboard_control_disabled") { setKeyboardEnabled(false); setKeyboardCaptured(false); heldKeysRef.current.clear(); }
           if (message.type === "webrtc_offer") {
             console.debug(`WEBRTC_OFFER_RECEIVED sessionId=${sessionId}`);
@@ -164,17 +165,18 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
       } catch (reason) { setState("failed"); setError(reason instanceof Error ? reason.message : "Unable to start session"); }
     };
     void start();
-    return () => { active = false; if (statsTimer) window.clearInterval(statsTimer); if (moveFrameRef.current != null) cancelAnimationFrame(moveFrameRef.current); channelRef.current?.close(); const socket = socketRef.current; if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_end", sessionId: new URL(socket.url).searchParams.get("sessionId"), reason: "viewer_left" })); socket?.close(); peerRef.current?.close(); };
+    return () => { active = false; if (statsTimer) window.clearInterval(statsTimer); if (moveFrameRef.current != null) cancelAnimationFrame(moveFrameRef.current); heldKeysRef.current.clear(); const video=videoRef.current; video?.pause(); if(video) video.srcObject=null; channelRef.current?.close(); channelRef.current=null; const socket = socketRef.current; if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_end", sessionId: new URL(socket.url).searchParams.get("sessionId"), reason: "viewer_left" })); socket?.close(); socketRef.current=null; peerRef.current?.close(); peerRef.current=null; sessionIdRef.current=null; };
   }, [deviceId]);
 
   async function fullscreen() { await videoRef.current?.requestFullscreen(); }
   function videoPlaying() {
     if (state !== "streaming") {
       console.debug(`TIME_TO_FIRST_BROWSER_FRAME_MS=${(performance.now() - peerConnectedAtRef.current).toFixed(1)}`);
+      console.debug(`FIRST_VIDEO_FRAME sessionId=${sessionIdRef.current}`);
       setState("streaming");
     }
   }
-  function disconnect() { const socket = socketRef.current; const sessionId = socket ? new URL(socket.url).searchParams.get("sessionId") : null; if (socket?.readyState === WebSocket.OPEN && sessionId) socket.send(JSON.stringify({ type: "session_end", sessionId, reason: "viewer_disconnected" })); peerRef.current?.close(); socket?.close(); setState("ended"); }
+  function disconnect() { releaseKeys(); releaseButtons(); const socket = socketRef.current; const sessionId = sessionIdRef.current; if (socket?.readyState === WebSocket.OPEN && sessionId) socket.send(JSON.stringify({ type: "session_end", sessionId, reason: "viewer_disconnected" })); const video=videoRef.current; video?.pause(); if(video) video.srcObject=null; channelRef.current?.close(); channelRef.current=null; peerRef.current?.close(); peerRef.current=null; socket?.close(); socketRef.current=null; heldKeysRef.current.clear(); setKeyboardCaptured(false); setState("ended"); }
 
   function sendMouse(type: string, fields: Record<string, unknown>, move = false) {
     const channel = channelRef.current; const sessionId = sessionIdRef.current;
@@ -192,12 +194,6 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   function mouseButton(event: React.MouseEvent<HTMLVideoElement>, down: boolean) { const button = buttonName(event.button); if (!button) return; event.preventDefault(); sendMouse(down ? "mouse_down" : "mouse_up", { button }); }
   function releaseButtons() { for (const button of ["left", "right", "middle"]) sendMouse("mouse_up", { button }); }
   function mouseWheel(event: React.WheelEvent<HTMLVideoElement>) { event.preventDefault(); sendMouse("mouse_scroll", { dx: Math.max(-1200, Math.min(1200, Math.round(-event.deltaX))), dy: Math.max(-1200, Math.min(1200, Math.round(-event.deltaY))) }); }
-  async function enableMouse() {
-    const sessionId = sessionIdRef.current; if (!sessionId) return; setMouseRequesting(true); setError("");
-    try { const result = await api<{ session: { permissions: string[] } }>(`/api/sessions/${sessionId}/mouse-control`, { method: "POST" }); if (result.session.permissions.includes("MOUSE_CONTROL")) { setMouseAuthorized(true); setMouseEnabled(true); setMouseRequesting(false); } } catch (reason) { setMouseRequesting(false); setError(reason instanceof Error ? reason.message : "Unable to request mouse control"); }
-  }
-  async function disableMouse() { const sessionId = sessionIdRef.current; setMouseEnabled(false); if (sessionId) await api(`/api/sessions/${sessionId}/mouse-control`, { method: "DELETE" }); }
-
   function sendKeyboard(type: string, fields: Record<string, unknown>, force = false) {
     const channel=channelRef.current; const sessionId=sessionIdRef.current;
     if (!keyboardEnabled || !keyboardAuthorized || !sessionId || channel?.readyState!=="open") return false;
@@ -216,12 +212,9 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
     if (!keyboardEnabled || !keyboardCaptured || !heldKeysRef.current.has(event.code)) return;
     event.preventDefault(); sendKeyboard("key_up",{code:event.code,key:event.key,modifiers:modifiersOf(event.nativeEvent)},true); heldKeysRef.current.delete(event.code);
   }
-  async function enableKeyboard() { const sessionId=sessionIdRef.current; if (!sessionId) return; setKeyboardRequesting(true); setError(""); try { const result=await api<{session:{permissions:string[]}}>(`/api/sessions/${sessionId}/keyboard-control`,{method:"POST"}); if(result.session.permissions.includes("KEYBOARD_CONTROL")){setKeyboardAuthorized(true);setKeyboardEnabled(true);setKeyboardRequesting(false);} } catch(reason){setKeyboardRequesting(false);setError(reason instanceof Error?reason.message:"Unable to request keyboard control");} }
-  async function disableKeyboard() { const sessionId=sessionIdRef.current; releaseKeys(); setKeyboardEnabled(false); setKeyboardCaptured(false); if(sessionId) await api(`/api/sessions/${sessionId}/keyboard-control`,{method:"DELETE"}); }
-
   const stateLabel = state === "waiting_frame" ? "Waiting for first frame" : state === "streaming" ? "Streaming" : state;
   return <main className="viewer"><header><Link href="/devices" className="back">← Devices</Link><div><strong>{device?.deviceName ?? "Remote device"}</strong><span className={`connection ${state}`}>{stateLabel}</span></div><button className="secondary" onClick={disconnect}>Disconnect</button></header>
     <section className="screen"><video ref={videoRef} tabIndex={0} autoPlay playsInline onPlaying={videoPlaying} onClick={() => { if(keyboardEnabled){videoRef.current?.focus();setKeyboardCaptured(true);} }} onBlur={() => {releaseKeys();setKeyboardCaptured(false);}} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onMouseMove={mouseMove} onMouseDown={(event) => mouseButton(event, true)} onMouseUp={(event) => mouseButton(event, false)} onMouseLeave={releaseButtons} onContextMenu={(event) => mouseEnabled && event.preventDefault()} onWheel={mouseWheel} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}{keyboardEnabled && <div className="keyboard-status" role="status">Keyboard control {keyboardCaptured ? "captured — Ctrl+Alt+Esc releases" : "enabled — click the screen to capture"}{keyboardWarning && <p>{keyboardWarning}</p>}</div>}</section>
-    <footer><div><span>Resolution<strong>{stats.resolution}</strong></span><span>FPS<strong>{stats.fps}</strong></span><span>Bitrate<strong>{stats.bitrate}</strong></span><span>Network RTT<strong>{stats.networkRtt}</strong></span><span>Packet loss<strong>{stats.packetLoss}</strong></span><span>ICE route<strong>{stats.route}</strong></span><span>Protocol<strong>{stats.protocol}</strong></span><span>Control channel<strong>{controlChannel}</strong></span><span>Mouse Control<strong>{mouseEnabled ? "ON" : "OFF"}</strong></span><span>Keyboard Control<strong>{keyboardEnabled ? (keyboardCaptured ? "CAPTURED" : "ON") : "OFF"}</strong></span></div>{mouseEnabled ? <button className="secondary" onClick={() => void disableMouse()}>Disable Mouse Control</button> : <button className="secondary" disabled={mouseRequesting || state !== "streaming" || controlChannel !== "connected"} onClick={() => void enableMouse()}>{mouseRequesting ? "Waiting for approval…" : "Enable Mouse Control"}</button>}{keyboardEnabled ? <button className="secondary" onClick={() => void disableKeyboard()}>Disable Keyboard Control</button> : <button className="secondary" disabled={keyboardRequesting||state!=="streaming"||controlChannel!=="connected"} onClick={() => void enableKeyboard()}>{keyboardRequesting?"Waiting for approval…":"Enable Keyboard Control"}</button>}<button className="secondary" onClick={() => void fullscreen()}>Fullscreen</button></footer>
+    <footer><div><span>Resolution<strong>{stats.resolution}</strong></span><span>FPS<strong>{stats.fps}</strong></span><span>Bitrate<strong>{stats.bitrate}</strong></span><span>Network RTT<strong>{stats.networkRtt}</strong></span><span>Packet loss<strong>{stats.packetLoss}</strong></span><span>ICE route<strong>{stats.route}</strong></span><span>Protocol<strong>{stats.protocol}</strong></span><span>Screen<strong>{state === "streaming" ? "Connected" : "Connecting"}</strong></span><span>Control<strong>{controlChannel === "connected" && mouseEnabled && keyboardEnabled ? "Connected" : "Connecting"}</strong></span></div><button className="secondary" onClick={() => void fullscreen()}>Fullscreen</button></footer>
   </main>;
 }

@@ -38,6 +38,22 @@ export class TrustedAccessStore {
     return Boolean(record && devicePublicKey && record.devicePublicKey === devicePublicKey && !record.revokedAt && (!record.expiresAt || Date.parse(record.expiresAt) > Date.now()));
   }
 
+  hasRemoteControl(deviceId: string, userId: string, devicePublicKey: string | undefined): boolean {
+    return (["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"] as const)
+      .every((permission) => this.has(deviceId, userId, permission, devicePublicKey));
+  }
+
+  grantRemoteControl(deviceId: string, userId: string, devicePublicKey: string): TrustedAccessRecord[] {
+    return (["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"] as const)
+      .map((permission) => this.grant(deviceId, userId, permission, devicePublicKey));
+  }
+
+  revokeRemoteControl(deviceId: string, userId: string): TrustedAccessRecord[] {
+    return (["SCREEN_VIEW", "MOUSE_CONTROL", "KEYBOARD_CONTROL"] as const)
+      .map((permission) => this.revoke(deviceId, userId, permission))
+      .filter((record): record is TrustedAccessRecord => Boolean(record));
+  }
+
   list(deviceId: string, userId: string, devicePublicKey?: string): TrustedAccessRecord[] {
     return [...this.records.values()]
       .filter((record) => record.deviceId === deviceId && record.userId === userId && !record.revokedAt && (!devicePublicKey || record.devicePublicKey === devicePublicKey))
