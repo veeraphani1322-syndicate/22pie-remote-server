@@ -51,7 +51,8 @@ jobs:
           }
           Write-Host "Verified: TaskDialogIndirect is not in the executable import table"
           $headers = & $llvmReadObj.Source --file-headers $exe
-          if ($headers -notmatch "IMAGE_SUBSYSTEM_WINDOWS_GUI") {
+          $headerText = $headers -join "`n"
+          if ($headerText -notmatch "IMAGE_SUBSYSTEM_WINDOWS_GUI") {
             throw "Release executable is not using the Windows GUI subsystem"
           }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
