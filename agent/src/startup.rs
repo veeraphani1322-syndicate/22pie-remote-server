@@ -18,8 +18,8 @@ mod platform {
     use windows_sys::Win32::{
         Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
         System::Registry::{
-            RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-            KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+            RegCloseKey, RegCreateKeyW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+            REG_SZ,
         },
     };
 
@@ -33,19 +33,7 @@ mod platform {
     pub fn reconcile(enabled: bool) -> Result<()> {
         let subkey = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
         let mut key: HKEY = std::ptr::null_mut();
-        let status = unsafe {
-            RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                subkey.as_ptr(),
-                0,
-                std::ptr::null_mut(),
-                REG_OPTION_NON_VOLATILE,
-                KEY_SET_VALUE,
-                std::ptr::null(),
-                &mut key,
-                std::ptr::null_mut(),
-            )
-        };
+        let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, subkey.as_ptr(), &mut key) };
         if status != ERROR_SUCCESS {
             bail!("could not open the current-user startup registry key ({status})");
         }
