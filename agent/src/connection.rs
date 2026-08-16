@@ -32,6 +32,16 @@ enum IncomingMessage {
     ControlFrame,
 }
 
+fn cancel_pending_mouse_consent(pending: &mut Option<String>, message: &ServerMessage) -> bool {
+    if matches!(message, ServerMessage::SessionEnded { session_id, .. } if pending.as_deref() == Some(session_id))
+    {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
 pub async fn run(
     config: Config,
     device: DeviceIdentity,
@@ -236,7 +246,13 @@ where
                 awaiting_ack = true;
             }
             incoming = reader.next() => {
-                match parse_incoming(incoming)? {
+                let incoming = parse_incoming(incoming)?;
+                if let IncomingMessage::Protocol(message) = &incoming {
+                    if cancel_pending_mouse_consent(&mut mouse_consent_pending, message) {
+                        info!("Pending mouse-control consent cancelled by session end");
+                    }
+                }
+                match incoming {
                     IncomingMessage::Protocol(ServerMessage::HeartbeatAck { timestamp }) => {
                         awaiting_ack = false;
                         debug!(server_timestamp = %timestamp, "Heartbeat acknowledged");
@@ -297,7 +313,6 @@ where
                         if active_session_id.as_deref() == Some(&session_id) {
                             if let Some(media) = &media { let _ = media.commands.send(MediaCommand::Answer(sdp)).await; }
                         }
-                        if mouse_consent_pending.as_deref() == Some(&session_id) { mouse_consent_pending = None; }
                     }
                     IncomingMessage::Protocol(ServerMessage::IceCandidate { session_id, candidate, sdp_mid, sdp_m_line_index }) => {
                         if active_session_id.as_deref() == Some(&session_id) {
@@ -441,5 +456,27 @@ fn parse_incoming(
         Some(Ok(Message::Binary(_))) => Err(anyhow!("server sent unsupported binary data")),
         Some(Ok(Message::Frame(_))) => Ok(IncomingMessage::ControlFrame),
         Some(Err(error)) => Err(error).context("WebSocket receive failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webrtc_answer_does_not_cancel_pending_mouse_consent() {
+        let answer = ServerMessage::WebrtcAnswer {
+            session_id: "session-a".into(),
+            sdp: "answer".into(),
+        };
+        let ended = ServerMessage::SessionEnded {
+            session_id: "session-a".into(),
+            reason: "viewer_left".into(),
+        };
+        let mut pending = Some("session-a".to_owned());
+        assert!(!cancel_pending_mouse_consent(&mut pending, &answer));
+        assert_eq!(pending.as_deref(), Some("session-a"));
+        assert!(cancel_pending_mouse_consent(&mut pending, &ended));
+        assert_eq!(pending, None);
     }
 }

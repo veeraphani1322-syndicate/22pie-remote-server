@@ -22,7 +22,11 @@ export interface SessionView {
 interface SessionRecord extends SessionView {
   viewer?: WebSocket;
   timeout: NodeJS.Timeout;
+  pendingOffer?: Extract<ServerMessage, { type: "webrtc_offer" }>;
+  pendingAgentCandidates: Array<Extract<ServerMessage, { type: "ice_candidate" }>>;
 }
+
+const MAX_PENDING_ICE_CANDIDATES = 64;
 
 function send(socket: WebSocket | undefined, message: ServerMessage): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
@@ -48,6 +52,7 @@ export class SessionManager {
     const record: SessionRecord = {
       sessionId, userId, deviceId, status: "requested", permissions: ["SCREEN_VIEW"],
       requestedAt: new Date().toISOString(), trusted,
+      pendingAgentCandidates: [],
       timeout: setTimeout(() => this.end(sessionId, "approval_timeout", "expired"), this.approvalTimeoutMs),
     };
     record.timeout.unref();
@@ -68,6 +73,17 @@ export class SessionManager {
     session.viewer?.close(4001, "Replaced by newer viewer connection");
     session.viewer = socket;
     return this.view(session);
+  }
+
+  flushPendingViewerSignaling(sessionId: string, userId: string, socket: WebSocket): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.userId !== userId || session.viewer !== socket || socket.readyState !== WebSocket.OPEN) return;
+    if (session.pendingOffer) {
+      send(socket, session.pendingOffer);
+      delete session.pendingOffer;
+    }
+    for (const candidate of session.pendingAgentCandidates) send(socket, candidate);
+    session.pendingAgentCandidates = [];
   }
 
   viewerDisconnected(sessionId: string, userId: string, socket: WebSocket): void {
@@ -130,7 +146,18 @@ export class SessionManager {
     }
     if (["webrtc_offer", "webrtc_answer", "ice_candidate"].includes(message.type) && ["accepted", "connecting", "connected"].includes(session.status)) {
       session.status = "connecting";
-      send(session.viewer, message as ServerMessage);
+      if (message.type === "webrtc_offer") {
+        const offer = message as Extract<ServerMessage, { type: "webrtc_offer" }>;
+        if (session.viewer?.readyState === WebSocket.OPEN) send(session.viewer, offer);
+        else session.pendingOffer = offer;
+      } else if (message.type === "ice_candidate") {
+        const candidate = message as Extract<ServerMessage, { type: "ice_candidate" }>;
+        if (session.viewer?.readyState === WebSocket.OPEN) send(session.viewer, candidate);
+        else {
+          if (session.pendingAgentCandidates.length === MAX_PENDING_ICE_CANDIDATES) session.pendingAgentCandidates.shift();
+          session.pendingAgentCandidates.push(candidate);
+        }
+      } else send(session.viewer, message as ServerMessage);
     }
   }
 
@@ -199,6 +226,8 @@ export class SessionManager {
     clearTimeout(session.timeout);
     session.status = status;
     session.endedAt = new Date().toISOString();
+    delete session.pendingOffer;
+    session.pendingAgentCandidates = [];
     send(session.viewer, status === "rejected"
       ? { type: "session_rejected", sessionId, reason }
       : { type: "session_ended", sessionId, reason });
@@ -212,7 +241,7 @@ export class SessionManager {
   }
 
   private view(session: SessionRecord): SessionView {
-    const { viewer: _viewer, timeout: _timeout, ...view } = session;
+    const { viewer: _viewer, timeout: _timeout, pendingOffer: _pendingOffer, pendingAgentCandidates: _pendingAgentCandidates, ...view } = session;
     return view;
   }
 }

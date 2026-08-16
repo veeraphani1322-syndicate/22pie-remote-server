@@ -46,6 +46,7 @@ export class ViewerWebSocketServer {
       return;
     }
     socket.send(JSON.stringify({ type: "session_state", session }));
+    this.sessions.flushPendingViewerSignaling(sessionId, userId, socket);
     socket.on("message", (data, isBinary) => {
       if (isBinary) return socket.close(1003, "Text messages required");
       try {

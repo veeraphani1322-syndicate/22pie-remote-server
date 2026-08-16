@@ -50,27 +50,51 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
         peerRef.current = peer;
         const socket = new WebSocket(`${WS_URL}/viewer?sessionId=${encodeURIComponent(sessionId)}`);
         socketRef.current = socket;
+        const pendingLocalCandidates: RTCIceCandidate[] = [];
+        let signalingChain = Promise.resolve();
+        const sendSignal = (message: Record<string, unknown>, diagnostic: string) => {
+          if (socket.readyState !== WebSocket.OPEN) throw new Error(`Viewer WebSocket is not open for ${diagnostic}`);
+          socket.send(JSON.stringify(message));
+          console.debug(`${diagnostic} sessionId=${sessionId}`);
+        };
+        socket.onopen = () => {
+          console.debug(`VIEWER_WS_OPEN sessionId=${sessionId}`);
+          for (const candidate of pendingLocalCandidates.splice(0)) sendSignal({ type: "ice_candidate", sessionId, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex }, "ICE_CANDIDATE_SENT");
+        };
+        socket.onclose = ({ code }) => {
+          console.debug(`VIEWER_WS_CLOSE sessionId=${sessionId} code=${code}`);
+          if (active && state !== "ended") setState("ended");
+        };
+        socket.onerror = () => {
+          console.error(`VIEWER_WS_ERROR sessionId=${sessionId}`);
+          if (active) { setState("failed"); setError("Viewer signaling connection failed."); }
+        };
         peer.ontrack = ({ streams }) => { if (videoRef.current && streams[0]) videoRef.current.srcObject = streams[0]; };
         peer.ondatachannel = ({ channel }) => {
           if (channel.label !== "control") { channel.close(); return; }
           channelRef.current = channel;
-          channel.onopen = () => setControlChannel("connected");
-          channel.onclose = () => { setControlChannel("disconnected"); setMouseEnabled(false); };
-          channel.onerror = () => { setControlChannel("disconnected"); setMouseEnabled(false); };
+          channel.onopen = () => { console.debug(`CONTROL_CHANNEL_STATE=OPEN sessionId=${sessionId}`); setControlChannel("connected"); };
+          channel.onclose = () => { console.debug(`CONTROL_CHANNEL_STATE=CLOSED sessionId=${sessionId}`); setControlChannel("disconnected"); setMouseEnabled(false); };
+          channel.onerror = () => { console.error(`CONTROL_CHANNEL_STATE=ERROR sessionId=${sessionId}`); setControlChannel("disconnected"); setMouseEnabled(false); };
         };
         peer.onicecandidate = ({ candidate }) => {
-          if (candidate && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "ice_candidate", sessionId, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex }));
+          if (!candidate) return;
+          if (socket.readyState === WebSocket.OPEN) sendSignal({ type: "ice_candidate", sessionId, candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex }, "ICE_CANDIDATE_SENT");
+          else { if (pendingLocalCandidates.length === 64) pendingLocalCandidates.shift(); pendingLocalCandidates.push(candidate); }
         };
+        peer.oniceconnectionstatechange = () => console.debug(`ICE_CONNECTION_STATE=${peer.iceConnectionState} sessionId=${sessionId}`);
         peer.onconnectionstatechange = () => {
+          console.debug(`PEER_CONNECTION_STATE=${peer.connectionState} sessionId=${sessionId}`);
           if (peer.connectionState === "connected") {
             setState("waiting_frame");
             peerConnectedAtRef.current = performance.now();
             console.debug(`WEBRTC_NEGOTIATION_MS=${(performance.now() - requestStartedAt).toFixed(1)}`);
-            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_connected", sessionId }));
+            if (socket.readyState === WebSocket.OPEN) sendSignal({ type: "session_connected", sessionId }, "SESSION_CONNECTED_SENT");
           }
           if (["failed", "disconnected", "closed"].includes(peer.connectionState)) setState(peer.connectionState === "failed" ? "failed" : "ended");
         };
-        socket.onmessage = async ({ data }) => {
+        socket.onmessage = ({ data }) => {
+          signalingChain = signalingChain.then(async () => {
           const message = JSON.parse(String(data)) as Record<string, unknown>;
           if (message.type === "session_state") {
             const session = message.session as { status?: string };
@@ -86,12 +110,23 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
           if (message.type === "mouse_control_rejected") { setMouseAuthorized(false); setMouseEnabled(false); setMouseRequesting(false); setError(String(message.reason ?? "Mouse control denied")); }
           if (message.type === "mouse_control_disabled") { setMouseEnabled(false); }
           if (message.type === "webrtc_offer") {
+            console.debug(`WEBRTC_OFFER_RECEIVED sessionId=${sessionId}`);
             setState("negotiating");
             await peer.setRemoteDescription({ type: "offer", sdp: String(message.sdp) });
-            const answer = await peer.createAnswer(); await peer.setLocalDescription(answer);
-            socket.send(JSON.stringify({ type: "webrtc_answer", sessionId, sdp: answer.sdp }));
+            console.debug(`WEBRTC_REMOTE_DESCRIPTION_SET sessionId=${sessionId}`);
+            const answer = await peer.createAnswer();
+            console.debug(`WEBRTC_ANSWER_CREATED sessionId=${sessionId}`);
+            await peer.setLocalDescription(answer);
+            sendSignal({ type: "webrtc_answer", sessionId, sdp: answer.sdp }, "WEBRTC_ANSWER_SENT");
           }
-          if (message.type === "ice_candidate") await peer.addIceCandidate({ candidate: String(message.candidate), sdpMid: message.sdpMid as string | null, sdpMLineIndex: message.sdpMLineIndex as number | null });
+          if (message.type === "ice_candidate") {
+            console.debug(`ICE_CANDIDATE_RECEIVED sessionId=${sessionId}`);
+            await peer.addIceCandidate({ candidate: String(message.candidate), sdpMid: message.sdpMid as string | null, sdpMLineIndex: message.sdpMLineIndex as number | null });
+          }
+          }).catch((reason) => {
+            console.error(`VIEWER_SIGNALING_ERROR sessionId=${sessionId}`, reason);
+            if (active) { setState("failed"); setError(reason instanceof Error ? reason.message : "WebRTC signaling failed"); }
+          });
         };
         statsTimer = window.setInterval(async () => {
           const reports = await peer.getStats();

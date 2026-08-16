@@ -121,3 +121,63 @@ test("mouse control is separately authorized and can be downgraded without endin
   assert.equal(sessions.getOwned(session.sessionId, "user-a")?.status, "connected");
   sessions.end(session.sessionId, "test_cleanup");
 });
+
+test("buffers an early agent offer and bounded ICE until the viewer attaches", () => {
+  const { agent, sessions } = fixture();
+  const session = sessions.request("user-a", "device-a", "Viewer");
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: session.sessionId });
+  sessions.fromAgent("device-a", { type: "webrtc_offer", sessionId: session.sessionId, sdp: "offer-b" });
+  for (let index = 0; index < 70; index += 1) {
+    sessions.fromAgent("device-a", { type: "ice_candidate", sessionId: session.sessionId, candidate: `candidate-${index}`, sdpMid: "0", sdpMLineIndex: 0 });
+  }
+
+  const viewer = fakeSocket();
+  sessions.attachViewer(session.sessionId, "user-a", viewer);
+  sessions.flushPendingViewerSignaling(session.sessionId, "user-a", viewer);
+
+  assert.deepEqual(viewer.messages[0], { type: "webrtc_offer", sessionId: session.sessionId, sdp: "offer-b" });
+  assert.equal(viewer.messages.length, 65);
+  assert.equal((viewer.messages[1] as { candidate: string }).candidate, "candidate-6");
+  assert.equal((viewer.messages.at(-1) as { candidate: string }).candidate, "candidate-69");
+  sessions.flushPendingViewerSignaling(session.sessionId, "user-a", viewer);
+  assert.equal(viewer.messages.length, 65, "pending signaling is delivered exactly once");
+  sessions.end(session.sessionId, "test_cleanup");
+  assert.equal(agent.messages.at(-1) && (agent.messages.at(-1) as { sessionId?: string }).sessionId, session.sessionId);
+});
+
+test("five immediate reconnect cycles use fresh session-scoped signaling", () => {
+  const { agent, sessions } = fixture();
+  let previousSessionId: string | undefined;
+  for (let cycle = 0; cycle < 5; cycle += 1) {
+    const session = sessions.request("user-a", "device-a", "Viewer");
+    assert.notEqual(session.sessionId, previousSessionId);
+    sessions.fromAgent("device-a", { type: "session_accept", sessionId: session.sessionId });
+    sessions.fromAgent("device-a", { type: "webrtc_offer", sessionId: session.sessionId, sdp: `offer-${cycle}` });
+    const viewer = fakeSocket();
+    sessions.attachViewer(session.sessionId, "user-a", viewer);
+    sessions.flushPendingViewerSignaling(session.sessionId, "user-a", viewer);
+    assert.deepEqual(viewer.messages, [{ type: "webrtc_offer", sessionId: session.sessionId, sdp: `offer-${cycle}` }]);
+    sessions.fromViewer(session.sessionId, "user-a", { type: "webrtc_answer", sessionId: session.sessionId, sdp: `answer-${cycle}` });
+    assert.deepEqual(agent.messages.at(-1), { type: "webrtc_answer", sessionId: session.sessionId, sdp: `answer-${cycle}` });
+    sessions.fromViewer(session.sessionId, "user-a", { type: "session_connected", sessionId: session.sessionId });
+    assert.equal(sessions.getOwned(session.sessionId, "user-a")?.status, "connected");
+    sessions.viewerDisconnected(session.sessionId, "user-a", viewer);
+    assert.equal(sessions.getOwned(session.sessionId, "user-a")?.status, "ended");
+    previousSessionId = session.sessionId;
+  }
+});
+
+test("ended session signaling is cleared and never delivered to a new session", () => {
+  const { sessions } = fixture();
+  const first = sessions.request("user-a", "device-a", "Viewer");
+  sessions.fromAgent("device-a", { type: "session_accept", sessionId: first.sessionId });
+  sessions.fromAgent("device-a", { type: "webrtc_offer", sessionId: first.sessionId, sdp: "stale-offer" });
+  sessions.end(first.sessionId, "viewer_left");
+
+  const second = sessions.request("user-a", "device-a", "Viewer");
+  const viewer = fakeSocket();
+  sessions.attachViewer(second.sessionId, "user-a", viewer);
+  sessions.flushPendingViewerSignaling(second.sessionId, "user-a", viewer);
+  assert.deepEqual(viewer.messages, []);
+  sessions.end(second.sessionId, "test_cleanup");
+});
