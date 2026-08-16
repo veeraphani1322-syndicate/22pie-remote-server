@@ -11,12 +11,20 @@ const DEFAULT_HEARTBEAT_SECONDS: u64 = 20;
 #[serde(rename_all = "camelCase")]
 struct FileConfig {
     remote_server_url: Option<String>,
+    app_display_name: Option<String>,
+    window_title: Option<String>,
+    tray_display_name: Option<String>,
+    start_with_windows: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server_url: String,
     pub heartbeat_interval: Duration,
+    pub app_display_name: String,
+    pub window_title: String,
+    pub tray_display_name: String,
+    pub start_with_windows: bool,
 }
 
 impl Config {
@@ -46,9 +54,30 @@ impl Config {
             bail!("HEARTBEAT_INTERVAL_SECONDS must be between 5 and 3600");
         }
 
+        let file = read_file_config()?;
         Ok(Self {
             server_url,
             heartbeat_interval: Duration::from_secs(heartbeat_seconds),
+            app_display_name: value_or_default(
+                env::var("APP_DISPLAY_NAME").ok().or(file.app_display_name),
+                "Graphic Service",
+            ),
+            window_title: value_or_default(
+                env::var("WINDOW_TITLE").ok().or(file.window_title),
+                "Graphic Service",
+            ),
+            tray_display_name: value_or_default(
+                env::var("TRAY_DISPLAY_NAME")
+                    .ok()
+                    .or(file.tray_display_name),
+                "Graphic Service",
+            ),
+            start_with_windows: env::var("START_WITH_WINDOWS")
+                .ok()
+                .map(|value| parse_bool(&value))
+                .transpose()?
+                .or(file.start_with_windows)
+                .unwrap_or(false),
         })
     }
 }
@@ -64,6 +93,10 @@ fn read_file_config() -> Result<FileConfig> {
     if !path.exists() {
         return Ok(FileConfig {
             remote_server_url: None,
+            app_display_name: None,
+            window_title: None,
+            tray_display_name: None,
+            start_with_windows: None,
         });
     }
 
@@ -71,4 +104,41 @@ fn read_file_config() -> Result<FileConfig> {
         .with_context(|| format!("failed to read agent configuration at {}", path.display()))?;
     serde_json::from_str(&contents)
         .with_context(|| format!("invalid agent configuration at {}", path.display()))
+}
+
+fn value_or_default(value: Option<String>, default: &str) -> String {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| default.to_owned())
+}
+
+fn parse_bool(value: &str) -> Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => bail!("START_WITH_WINDOWS must be true or false"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn display_names_have_legitimate_defaults_and_allow_overrides() {
+        assert_eq!(value_or_default(None, "Graphic Service"), "Graphic Service");
+        assert_eq!(
+            value_or_default(Some("Owner Remote".into()), "Graphic Service"),
+            "Owner Remote"
+        );
+        assert_eq!(
+            value_or_default(Some("  ".into()), "Graphic Service"),
+            "Graphic Service"
+        );
+    }
+    #[test]
+    fn startup_boolean_is_explicit() {
+        assert_eq!(parse_bool("true").unwrap(), true);
+        assert_eq!(parse_bool("OFF").unwrap(), false);
+        assert!(parse_bool("sometimes").is_err());
+    }
 }

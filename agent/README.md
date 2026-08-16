@@ -1,4 +1,4 @@
-# 22Pie Remote Agent — Phase 3
+# Graphic Service — 22Pie authorized remote agent
 
 This Rust agent authenticates an authorized computer, registers it with the 22Pie server, sends heartbeats, reconnects with capped exponential backoff, and supports consent-gated live viewing of the Windows primary monitor. It does not contain mouse/keyboard control, command execution, persistence, surveillance, clipboard access, or file-transfer capabilities.
 
@@ -6,7 +6,7 @@ This Rust agent authenticates an authorized computer, registers it with the 22Pi
 
 An untrusted viewing request displays a native Windows dialog with **Allow Once**, **Trust This Account**, and **Deny**. Trust is scoped to this device identity, server URL, stable account ID, and `SCREEN_VIEW`; both the server and agent must have matching records before a later prompt is skipped. While sharing, a visible top-level 22Pie Remote indicator remains open; closing it stops capture and ends the viewer session. Only one screen request can be pending or active at a time.
 
-Trusted access is stored at `%LOCALAPPDATA%\22Pie\RemoteAgent\trusted-access.json`. To review and revoke it locally while the console agent is running, type `revoke-trust`, press Enter, and use the visible Windows confirmation dialog. Revocation is synchronized to the authenticated server connection and does not terminate an already active session.
+Trusted access is stored at `%LOCALAPPDATA%\22Pie\RemoteAgent\trusted-access.json`. Screen, mouse, and keyboard trust can be revoked independently from the authenticated dashboard. First-time permissions retain explicit consent; trusted sessions do not show repeated activity dialogs.
 
 The capture pipeline uses the primary monitor, scales conservatively to at most 1280×720, limits output to approximately 15 FPS, encodes H.264, and sends it through WebRTC rather than JSON screenshots. ICE configuration arrives over the authenticated agent channel, supporting direct STUN negotiation and TURN relay without embedding TURN secrets in the executable.
 
@@ -26,7 +26,11 @@ On Windows, the application directory is `%LOCALAPPDATA%\22Pie\RemoteAgent`. An 
 
 ```json
 {
-  "remoteServerUrl": "wss://remote.22pie.com/agent"
+  "remoteServerUrl": "wss://remote.22pie.com/agent",
+  "appDisplayName": "Graphic Service",
+  "windowTitle": "Graphic Service",
+  "trayDisplayName": "Graphic Service",
+  "startWithWindows": false
 }
 ```
 
@@ -44,7 +48,7 @@ Future launches by the same Windows user reuse that UUID. If the file is unreada
 
 ## Windows Standalone Build
 
-The release executable is a visible console application. The destination Windows 10/11 computer does not need Rust, Cargo, Node.js, npm, VS Code, source code, or other development tools.
+The release executable is a single background Windows GUI-subsystem application. It opens no console, remains visible as `GraphicService.exe` in Task Manager, and uses no watchdog or child product executable.
 
 ### Build locally on Windows
 
@@ -58,10 +62,10 @@ cargo build --release --locked
 The executable is generated at:
 
 ```text
-target\release\22PieRemoteAgent.exe
+target\release\GraphicService.exe
 ```
 
-Copy that single executable to an authorized Windows 10/11 computer and double-click it. Press Ctrl+C in its console to stop the heartbeat, close the WebSocket, and exit normally.
+Copy the executable to an authorized Windows 10/11 computer and double-click it. Use Task Manager to stop it. See `README-Windows.txt` for startup-at-login and migration instructions.
 
 ### Build with GitHub Actions
 
@@ -72,14 +76,14 @@ The repository includes `.github/workflows/build-windows-agent.yml`, which build
 3. Select **Build Windows Agent**.
 4. Choose **Run workflow**, select the branch, and run it.
 5. Open the completed workflow run.
-6. Download the **22PieRemoteAgent-Windows** artifact.
-7. Extract `22PieRemoteAgent.exe` and copy it to the authorized Windows laptop.
+6. Download the **GraphicService-Windows** artifact.
+7. Extract `GraphicService.exe` and `README.txt` and copy them to the authorized Windows laptop.
 
 The workflow also runs automatically when agent files or the workflow itself change. macOS-to-MSVC cross-compilation needs a compatible Microsoft linker and Windows SDK and is not configured here; GitHub's Windows runner is the reliable cross-platform path.
 
 ## Run and verify
 
-Double-click `22PieRemoteAgent.exe`. Expected output includes:
+Double-click `GraphicService.exe`. The production build has no console output. Verify startup in Task Manager, the dashboard, and `%LOCALAPPDATA%\22Pie\RemoteAgent\logs\GraphicService.log`.
 
 ```text
 22Pie Remote Agent v0.1.1

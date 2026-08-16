@@ -42,7 +42,7 @@ jobs:
       - name: Verify executable
         shell: pwsh
         run: |
-          $exe = "target/x86_64-pc-windows-msvc/release/22PieRemoteAgent.exe"
+          $exe = "target/x86_64-pc-windows-msvc/release/GraphicService.exe"
           if (-not (Test-Path $exe)) { throw "Expected executable not found: $exe" }
           $llvmReadObj = Get-Command llvm-readobj.exe -ErrorAction Stop
           $imports = & $llvmReadObj.Source --coff-imports $exe
@@ -50,10 +50,17 @@ jobs:
             throw "The executable has a hard TaskDialogIndirect import"
           }
           Write-Host "Verified: TaskDialogIndirect is not in the executable import table"
+          $headers = & $llvmReadObj.Source --file-headers $exe
+          if ($headers -notmatch "IMAGE_SUBSYSTEM_WINDOWS_GUI") {
+            throw "Release executable is not using the Windows GUI subsystem"
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $exe dist/GraphicService.exe
+          Copy-Item README-Windows.txt dist/README.txt
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
-          name: 22PieRemoteAgent-Windows
-          path: agent/target/x86_64-pc-windows-msvc/release/22PieRemoteAgent.exe
+          name: GraphicService-Windows
+          path: agent/dist/*
           if-no-files-found: error

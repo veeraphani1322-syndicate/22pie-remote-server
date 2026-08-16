@@ -1,5 +1,3 @@
-use crate::trusted_access::LocalTrust;
-
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 
@@ -30,29 +28,55 @@ fn decision_from_button(button: i32) -> ConsentDecision {
     }
 }
 
-pub async fn request_screen_view(viewer_name: String, device_name: String) -> ConsentDecision {
-    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, ConsentKind::Screen))
-        .await
-        .unwrap_or(ConsentDecision::Deny)
+pub async fn request_screen_view(
+    viewer_name: String,
+    device_name: String,
+    window_title: String,
+) -> ConsentDecision {
+    tokio::task::spawn_blocking(move || {
+        prompt(
+            &viewer_name,
+            &device_name,
+            &window_title,
+            ConsentKind::Screen,
+        )
+    })
+    .await
+    .unwrap_or(ConsentDecision::Deny)
 }
 
-pub async fn request_mouse_control(viewer_name: String, device_name: String) -> ConsentDecision {
-    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, ConsentKind::Mouse))
-        .await
-        .unwrap_or(ConsentDecision::Deny)
+pub async fn request_mouse_control(
+    viewer_name: String,
+    device_name: String,
+    window_title: String,
+) -> ConsentDecision {
+    tokio::task::spawn_blocking(move || {
+        prompt(
+            &viewer_name,
+            &device_name,
+            &window_title,
+            ConsentKind::Mouse,
+        )
+    })
+    .await
+    .unwrap_or(ConsentDecision::Deny)
 }
 
-pub async fn request_keyboard_control(viewer_name: String, device_name: String) -> ConsentDecision {
-    tokio::task::spawn_blocking(move || prompt(&viewer_name, &device_name, ConsentKind::Keyboard))
-        .await
-        .unwrap_or(ConsentDecision::Deny)
-}
-
-pub async fn review_trusted_access(grants: &[LocalTrust]) -> bool {
-    let grants = grants.to_vec();
-    tokio::task::spawn_blocking(move || review(&grants))
-        .await
-        .unwrap_or(false)
+pub async fn request_keyboard_control(
+    viewer_name: String,
+    device_name: String,
+    window_title: String,
+) -> ConsentDecision {
+    tokio::task::spawn_blocking(move || {
+        prompt(
+            &viewer_name,
+            &device_name,
+            &window_title,
+            ConsentKind::Keyboard,
+        )
+    })
+    .await
+    .unwrap_or(ConsentDecision::Deny)
 }
 
 #[cfg(windows)]
@@ -64,15 +88,21 @@ fn wide(value: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn prompt(viewer_name: &str, device_name: &str, kind: ConsentKind) -> ConsentDecision {
-    try_task_dialog(viewer_name, device_name, kind)
-        .unwrap_or_else(|| fallback_consent_window(viewer_name, device_name, kind))
+fn prompt(
+    viewer_name: &str,
+    device_name: &str,
+    window_title: &str,
+    kind: ConsentKind,
+) -> ConsentDecision {
+    try_task_dialog(viewer_name, device_name, window_title, kind)
+        .unwrap_or_else(|| fallback_consent_window(viewer_name, device_name, window_title, kind))
 }
 
 #[cfg(windows)]
 fn try_task_dialog(
     viewer_name: &str,
     device_name: &str,
+    window_title: &str,
     kind: ConsentKind,
 ) -> Option<ConsentDecision> {
     use windows_sys::Win32::Foundation::FreeLibrary;
@@ -96,7 +126,7 @@ fn try_task_dialog(
     };
     let task_dialog: TaskDialogIndirectFn = unsafe { std::mem::transmute(address) };
 
-    let title = wide("22Pie Remote");
+    let title = wide(window_title);
     let instruction = wide(&format!(
         "{viewer_name} is requesting {}.",
         match kind {
@@ -163,6 +193,7 @@ fn try_task_dialog(
 fn fallback_consent_window(
     viewer_name: &str,
     device_name: &str,
+    window_title: &str,
     kind: ConsentKind,
 ) -> ConsentDecision {
     use std::ffi::c_void;
@@ -237,7 +268,7 @@ fn fallback_consent_window(
 
     let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
     let class_name = wide("22PieConsentFallbackWindow");
-    let title = wide("22Pie Remote");
+    let title = wide(window_title);
     let mut class: WNDCLASSW = unsafe { std::mem::zeroed() };
     class.lpfnWndProc = Some(window_proc);
     class.hInstance = instance;
@@ -325,107 +356,13 @@ fn fallback_consent_window(
 }
 
 #[cfg(not(windows))]
-fn prompt(_viewer_name: &str, _device_name: &str, _kind: ConsentKind) -> ConsentDecision {
+fn prompt(
+    _viewer_name: &str,
+    _device_name: &str,
+    _window_title: &str,
+    _kind: ConsentKind,
+) -> ConsentDecision {
     ConsentDecision::Deny
-}
-
-#[cfg(windows)]
-fn review(grants: &[LocalTrust]) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_YESNO,
-    };
-    let entries = grants
-        .iter()
-        .map(|grant| format!("{} — Screen viewing", grant.viewer_name))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let message = wide(&format!("Trusted Access\n\n{entries}\n\nRevoke all locally trusted screen-view accounts?\n\nYes = Revoke\nNo = Keep trusted access"));
-    let title = wide("22Pie Remote — Trusted Access");
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            message.as_ptr(),
-            title.as_ptr(),
-            MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON2 | MB_SETFOREGROUND,
-        ) == IDYES
-    }
-}
-
-#[cfg(not(windows))]
-fn review(_grants: &[LocalTrust]) -> bool {
-    false
-}
-
-#[cfg(windows)]
-pub fn show_sharing_indicator(stop: tokio::sync::oneshot::Sender<()>) {
-    std::thread::spawn(move || {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
-        };
-        let title = wide("22Pie Remote — Screen sharing active");
-        let message = wide(
-            "Your screen is being shared.\n\nSelect Stop Sharing to end the session immediately.",
-        );
-        unsafe {
-            MessageBoxW(
-                std::ptr::null_mut(),
-                message.as_ptr(),
-                title.as_ptr(),
-                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
-            );
-        }
-        let _ = stop.send(());
-    });
-}
-
-#[cfg(windows)]
-pub fn show_mouse_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
-    std::thread::spawn(move || {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
-        };
-        let title = wide("22Pie Remote — Mouse control active");
-        let message = wide("Your screen is being shared and remotely controlled.\n\nSelect OK to stop remote mouse control. Screen viewing will continue.");
-        unsafe {
-            MessageBoxW(
-                std::ptr::null_mut(),
-                message.as_ptr(),
-                title.as_ptr(),
-                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
-            );
-        }
-        let _ = stop.send(());
-    });
-}
-
-#[cfg(windows)]
-pub fn show_keyboard_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
-    std::thread::spawn(move || {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
-        };
-        let title = wide("22Pie Remote — Keyboard control active");
-        let message=wide("Remote keyboard control is active.\n\nSelect OK to stop remote keyboard control. Screen viewing and mouse control will continue.");
-        unsafe {
-            MessageBoxW(
-                std::ptr::null_mut(),
-                message.as_ptr(),
-                title.as_ptr(),
-                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
-            );
-        }
-        let _ = stop.send(());
-    });
-}
-
-#[cfg(not(windows))]
-pub fn show_keyboard_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
-    let _ = stop.send(());
-}
-
-#[cfg(not(windows))]
-pub fn show_mouse_control_indicator(stop: tokio::sync::oneshot::Sender<()>) {
-    let _ = stop.send(());
 }
 
 #[cfg(test)]
@@ -442,9 +379,4 @@ mod tests {
         assert_eq!(decision_from_button(DENY), ConsentDecision::Deny);
         assert_eq!(decision_from_button(0), ConsentDecision::Deny);
     }
-}
-
-#[cfg(not(windows))]
-pub fn show_sharing_indicator(stop: tokio::sync::oneshot::Sender<()>) {
-    let _ = stop.send(());
 }
