@@ -1,10 +1,11 @@
+use crate::stream_quality::StreamQuality;
 use anyhow::{bail, Context, Result};
 use directories::BaseDirs;
 use serde::Deserialize;
 use std::{env, fs, path::PathBuf, time::Duration};
 use url::Url;
 
-const DEFAULT_SERVER_URL: &str = "ws://8.234.114.242:4000/agent";
+const DEFAULT_SERVER_URL: &str = "ws://8.234.114.242:21116/agent";
 const DEFAULT_HEARTBEAT_SECONDS: u64 = 20;
 
 #[derive(Debug, Deserialize)]
@@ -15,6 +16,7 @@ struct FileConfig {
     window_title: Option<String>,
     tray_display_name: Option<String>,
     start_with_windows: Option<bool>,
+    stream_quality: Option<StreamQuality>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +27,7 @@ pub struct Config {
     pub window_title: String,
     pub tray_display_name: String,
     pub start_with_windows: bool,
+    pub stream_quality: StreamQuality,
 }
 
 impl Config {
@@ -56,21 +59,27 @@ impl Config {
 
         let file = read_file_config()?;
         Ok(Self {
+            stream_quality: env::var("STREAM_QUALITY")
+                .ok()
+                .map(|v| StreamQuality::parse(&v))
+                .transpose()?
+                .or(file.stream_quality)
+                .unwrap_or_default(),
             server_url,
             heartbeat_interval: Duration::from_secs(heartbeat_seconds),
             app_display_name: value_or_default(
                 env::var("APP_DISPLAY_NAME").ok().or(file.app_display_name),
-                "Graphic Service",
+                "Graphics Services",
             ),
             window_title: value_or_default(
                 env::var("WINDOW_TITLE").ok().or(file.window_title),
-                "Graphic Service",
+                "Graphics Services",
             ),
             tray_display_name: value_or_default(
                 env::var("TRAY_DISPLAY_NAME")
                     .ok()
                     .or(file.tray_display_name),
-                "Graphic Service",
+                "Graphics Services",
             ),
             start_with_windows: env::var("START_WITH_WINDOWS")
                 .ok()
@@ -97,6 +106,7 @@ fn read_file_config() -> Result<FileConfig> {
             window_title: None,
             tray_display_name: None,
             start_with_windows: None,
+            stream_quality: None,
         });
     }
 
@@ -125,14 +135,17 @@ mod tests {
     use super::*;
     #[test]
     fn display_names_have_legitimate_defaults_and_allow_overrides() {
-        assert_eq!(value_or_default(None, "Graphic Service"), "Graphic Service");
         assert_eq!(
-            value_or_default(Some("Owner Remote".into()), "Graphic Service"),
+            value_or_default(None, "Graphics Services"),
+            "Graphics Services"
+        );
+        assert_eq!(
+            value_or_default(Some("Owner Remote".into()), "Graphics Services"),
             "Owner Remote"
         );
         assert_eq!(
-            value_or_default(Some("  ".into()), "Graphic Service"),
-            "Graphic Service"
+            value_or_default(Some("  ".into()), "Graphics Services"),
+            "Graphics Services"
         );
     }
     #[test]

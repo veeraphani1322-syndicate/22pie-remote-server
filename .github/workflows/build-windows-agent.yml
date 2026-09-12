@@ -14,6 +14,8 @@ jobs:
   build:
     name: Build x86_64 Windows executable
     runs-on: windows-latest
+    env:
+      RUSTFLAGS: "-C target-feature=+crt-static"
     defaults:
       run:
         working-directory: agent
@@ -50,6 +52,9 @@ jobs:
             throw "The executable has a hard TaskDialogIndirect import"
           }
           Write-Host "Verified: TaskDialogIndirect is not in the executable import table"
+          if (($imports -join "`n") -match '(?i)(VCRUNTIME|MSVCP)[0-9_]*\.dll') {
+            throw "Executable must not require a separately installed Visual C++ runtime"
+          }
           $headers = & $llvmReadObj.Source --file-headers $exe
           $headerText = $headers -join "`n"
           if ($headerText -notmatch "IMAGE_SUBSYSTEM_WINDOWS_CUI") {
@@ -57,11 +62,21 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item $exe dist/GraphicService.exe
-          Copy-Item README-Windows.txt dist/README.txt
+          $smokeDir = Join-Path $env:RUNNER_TEMP "graphics-services-single-exe"
+          New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+          Copy-Item $exe (Join-Path $smokeDir "GraphicService.exe")
+          Push-Location $smokeDir
+          try {
+            $version = & .\GraphicService.exe --version
+            if ($LASTEXITCODE -ne 0 -or $version -notmatch '^Graphics Services ') {
+              throw "Single-executable startup verification failed"
+            }
+          } finally { Pop-Location }
+
 
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
           name: GraphicService-Windows
-          path: agent/dist/*
+          path: agent/dist/GraphicService.exe
           if-no-files-found: error

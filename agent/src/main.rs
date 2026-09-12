@@ -11,6 +11,7 @@ mod media;
 mod mouse;
 mod protocol;
 mod startup;
+mod stream_quality;
 mod trusted_access;
 
 use anyhow::Result;
@@ -21,6 +22,10 @@ use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("Graphics Services {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     let config = Config::from_env()?;
     logging::init()?;
     startup::reconcile(config.start_with_windows)?;
@@ -35,6 +40,12 @@ async fn main() -> Result<()> {
         device.architecture,
         device.device_id,
         config.server_url,
+    );
+    println!(
+        "Stream quality: {} (target {} FPS, {} Mbps). Press Ctrl+C to stop.\n",
+        config.stream_quality.name(),
+        config.stream_quality.fps(),
+        config.stream_quality.bitrate() / 1_000_000
     );
     info!(app_display_name=%config.app_display_name, window_title=%config.window_title, tray_display_name=%config.tray_display_name, start_with_windows=config.start_with_windows, "Foreground agent starting");
 

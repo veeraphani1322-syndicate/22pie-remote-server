@@ -1,4 +1,4 @@
-use crate::protocol::IceServer;
+use crate::{protocol::IceServer, stream_quality::StreamQuality};
 use anyhow::Result;
 use tokio::sync::mpsc;
 
@@ -49,18 +49,26 @@ impl MediaSession {
 }
 
 #[cfg(not(windows))]
-pub async fn start(_ice_servers: Vec<IceServer>, _session_id: String) -> Result<MediaSession> {
+pub async fn start(
+    _ice_servers: Vec<IceServer>,
+    _session_id: String,
+    _quality: StreamQuality,
+) -> Result<MediaSession> {
     anyhow::bail!("screen capture is supported only on Windows")
 }
 
 #[cfg(windows)]
-pub async fn start(ice_servers: Vec<IceServer>, session_id: String) -> Result<MediaSession> {
-    windows::start(ice_servers, session_id).await
+pub async fn start(
+    ice_servers: Vec<IceServer>,
+    session_id: String,
+    quality: StreamQuality,
+) -> Result<MediaSession> {
+    windows::start(ice_servers, session_id, quality).await
 }
 
 #[cfg(windows)]
 mod windows {
-    use super::{MediaCommand, MediaEvent, MediaSession};
+    use super::{MediaCommand, MediaEvent, MediaSession, StreamQuality};
     use crate::{
         keyboard::{KeyboardController, KeyboardMessage},
         mouse::{MouseController, MouseMessage},
@@ -70,7 +78,7 @@ mod windows {
     use bytes::Bytes;
     use fast_image_resize::{
         images::{Image, ImageRef},
-        PixelType, ResizeAlg, ResizeOptions, Resizer,
+        FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
     };
     use openh264::{
         encoder::{
@@ -112,7 +120,11 @@ mod windows {
         track::track_local::{track_local_static_sample::TrackLocalStaticSample, TrackLocal},
     };
 
-    pub async fn start(ice_servers: Vec<IceServer>, session_id: String) -> Result<MediaSession> {
+    pub async fn start(
+        ice_servers: Vec<IceServer>,
+        session_id: String,
+        quality: StreamQuality,
+    ) -> Result<MediaSession> {
         let media_started_at = Instant::now();
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs()?;
@@ -293,7 +305,13 @@ mod windows {
         event_tx.send(MediaEvent::Offer(local.sdp)).await.ok();
 
         let stopped = Arc::new(AtomicBool::new(false));
-        start_capture(track, stopped.clone(), capture_connected, event_tx.clone());
+        start_capture(
+            track,
+            stopped.clone(),
+            capture_connected,
+            event_tx.clone(),
+            quality,
+        );
         let command_peer = peer.clone();
         tokio::spawn(async move {
             while let Some(command) = command_rx.recv().await {
@@ -389,9 +407,10 @@ mod windows {
         stopped: Arc<AtomicBool>,
         connected: Arc<AtomicBool>,
         event_tx: mpsc::Sender<MediaEvent>,
+        quality: StreamQuality,
     ) {
         tokio::task::spawn_blocking(move || {
-            if let Err(error) = capture_loop(track, stopped, connected) {
+            if let Err(error) = capture_loop(track, stopped, connected, quality) {
                 let _ = event_tx.blocking_send(MediaEvent::Ended(error.to_string()));
             }
         });
@@ -401,6 +420,7 @@ mod windows {
         track: Arc<TrackLocalStaticSample>,
         stopped: Arc<AtomicBool>,
         connected: Arc<AtomicBool>,
+        quality: StreamQuality,
     ) -> Result<()> {
         while !stopped.load(Ordering::Acquire) && !connected.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(10));
@@ -415,18 +435,24 @@ mod windows {
             Capturer::new(display).context("failed to start primary monitor capture")?;
         let source_width = capturer.width();
         let source_height = capturer.height();
-        let scale = (1280.0 / source_width as f64)
-            .min(720.0 / source_height as f64)
-            .min(1.0);
-        let width = ((source_width as f64 * scale) as usize) & !1;
-        let height = ((source_height as f64 * scale) as usize) & !1;
+        let (width, height) = quality.dimensions(source_width, source_height)?;
+        info!(
+            profile = quality.name(),
+            source_width,
+            source_height,
+            width,
+            height,
+            target_fps = quality.fps(),
+            target_bitrate = quality.bitrate(),
+            "Screen encoding configured"
+        );
         let encoder_config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
             .complexity(Complexity::Low)
             .rate_control_mode(RateControlMode::Bitrate)
-            .bitrate(BitRate::from_bps(2_000_000))
-            .max_frame_rate(FrameRate::from_hz(15.0))
-            .intra_frame_period(IntraFramePeriod::from_num_frames(30))
+            .bitrate(BitRate::from_bps(quality.bitrate()))
+            .max_frame_rate(FrameRate::from_hz(quality.fps() as f32))
+            .intra_frame_period(IntraFramePeriod::from_num_frames(quality.fps() * 2))
             .skip_frames(true);
         let mut encoder = Encoder::with_api_config(OpenH264API::from_source(), encoder_config)
             .context("failed to initialize H.264 encoder")?;
@@ -435,10 +461,10 @@ mod windows {
         let mut yuv = YUVBuffer::new(width, height);
         let mut resizer = Resizer::new();
         let resize_options = ResizeOptions::new()
-            .resize_alg(ResizeAlg::Nearest)
+            .resize_alg(ResizeAlg::Convolution(FilterType::Hamming))
             .use_alpha(false);
         let runtime = tokio::runtime::Handle::current();
-        let frame_interval = Duration::from_nanos(1_000_000_000 / 15);
+        let frame_interval = Duration::from_nanos(1_000_000_000 / u64::from(quality.fps()));
         let mut next_frame_at = Instant::now();
         let mut frame_count = 0u64;
         while !stopped.load(Ordering::SeqCst) {

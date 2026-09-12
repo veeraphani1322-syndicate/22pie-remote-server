@@ -2,13 +2,13 @@
 
 Central server for authorized remote support on computers you own or have explicit permission to manage. It provides authenticated device APIs, an agent WebSocket, registration, heartbeat monitoring, and online/offline tracking.
 
-Phase 3 adds an authenticated Next.js dashboard, persistent per-device Ed25519 credentials, owner-filtered device access, explicit Windows Allow/Deny consent, WebRTC signaling, primary-monitor H.264 capture at up to 1280×720/15 FPS, configurable STUN/TURN, visible sharing status, session timeouts, and actual browser WebRTC statistics. See [`docs/phase-3-deployment.md`](docs/phase-3-deployment.md) for deployment and cross-network validation.
+Phase 3 adds an authenticated Next.js dashboard, persistent per-device Ed25519 credentials, owner-filtered device access, explicit Windows Allow/Deny consent, WebRTC signaling, primary-monitor H.264 capture with manual balanced/high/native profiles (default up to 1080p, targeting 30 FPS), configurable STUN/TURN, visible sharing status, session timeouts, and actual browser WebRTC statistics. See [`docs/phase-3-deployment.md`](docs/phase-3-deployment.md) for deployment and cross-network validation.
 
 Mouse and keyboard control and permission-scoped trusted access are implemented. The Windows agent opens a visible console and does not enable startup at login by default. Browser-to-Windows file upload now has per-file approval, progress, cancellation, and integrity checks (Windows validation pending). Clipboard, reverse file transfer, audio, and the remaining RustDesk feature migration are tracked in [`docs/rustdesk-migration.md`](docs/rustdesk-migration.md).
 
 ## DWService feature target
 
-The current target is DWAgent/DWService functional parity. See the [reference audit](docs/dwservice-parity-audit.md), [feature inventory with acceptance tests](docs/dwservice-feature-inventory.csv), and [implementation architecture](docs/dwservice-architecture.md). These track missing work; the current release is not feature-complete.
+The current target is DWAgent/DWService functional parity. See the [reference audit](docs/dwservice-parity-audit.md), [feature inventory with acceptance tests](docs/dwservice-feature-inventory.csv), and [implementation architecture](docs/dwservice-architecture.md). These track missing work; the current release is not feature-complete. Current delivery scope is Windows x64 as one `GraphicService.exe`; Linux/macOS are deferred. See [Windows 0.1.2 changes](docs/windows-0.1.2.md).
 
 ## Requirements
 

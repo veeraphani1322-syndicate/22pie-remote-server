@@ -71,7 +71,16 @@ pub async fn run(
 
         println!("Connecting...");
         info!(url = %config.server_url, "Connecting");
-        match connect_async(&config.server_url).await {
+        let connection = tokio::select! {
+            result = time::timeout(Duration::from_secs(15), connect_async(&config.server_url)) => {
+                match result {
+                    Ok(result) => result.map_err(anyhow::Error::from),
+                    Err(_) => Err(anyhow!("connection timed out after 15 seconds")),
+                }
+            }
+            _ = shutdown.changed() => break,
+        };
+        match connection {
             Ok((stream, _)) => {
                 info!("Connected");
                 println!("Connected");
@@ -368,7 +377,7 @@ where
                             }
                         }
                         let media_started_at = Instant::now();
-                        match crate::media::start(ice_servers, session_id.clone()).await {
+                        match crate::media::start(ice_servers, session_id.clone(), config.stream_quality).await {
                             Ok(started) => {
                                 debug!(MEDIA_STARTUP_MS = media_started_at.elapsed().as_millis(), %session_id, "Screen media initialized");
                                 let _ = started.commands.send(MediaCommand::SetMouseControl(true)).await;
