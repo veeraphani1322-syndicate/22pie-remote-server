@@ -6,6 +6,10 @@ Phase 3 adds an authenticated Next.js dashboard, persistent per-device Ed25519 c
 
 Mouse and keyboard control and permission-scoped trusted access are implemented. The Windows agent opens a visible console and does not enable startup at login by default. Browser-to-Windows file upload now has per-file approval, progress, cancellation, and integrity checks (Windows validation pending). Clipboard, reverse file transfer, audio, and the remaining RustDesk feature migration are tracked in [`docs/rustdesk-migration.md`](docs/rustdesk-migration.md).
 
+## DWService feature target
+
+The current target is DWAgent/DWService functional parity. See the [reference audit](docs/dwservice-parity-audit.md), [feature inventory with acceptance tests](docs/dwservice-feature-inventory.csv), and [implementation architecture](docs/dwservice-architecture.md). These track missing work; the current release is not feature-complete.
+
 ## Requirements
 
 - Node.js 20 or newer
