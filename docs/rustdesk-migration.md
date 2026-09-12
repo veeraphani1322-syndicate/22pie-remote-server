@@ -105,3 +105,13 @@ buffered up to the 32 MiB limit. A disconnect during final confirmation can leav
 a successfully saved file without confirmation at the sender; check the remote
 Downloads folder before retrying. Native Windows execution and two-network tests
 remain required before release.
+
+## VPS deployment — 2026-09-12
+
+Release `f06bf78` is deployed under `/home/twilightkart/22pie-releases/f06bf78` on `8.234.114.242`. The original checkout, administrator credentials and device/trust data remain in place. The release references the original persistent data paths.
+
+User systemd services `22pie-server` and `22pie-dashboard` listen on TCP 21116 and 21118. Compatibility sockets `22pie-compat-api` and `22pie-compat-dashboard` forward TCP 4000 and 3000 respectively, preserving existing client defaults and dashboard bookmarks. User lingering is enabled. Old `graphic-services-hbbs` and `graphic-services-hbbr` services are stopped and disabled, with their files retained for rollback. Other former RustDesk ports are not yet used by 22Pie; reusing port numbers does not provide RustDesk protocol or feature compatibility.
+
+Dashboard: `http://8.234.114.242:21118/login` (existing port 3000 also works). Agent: `ws://8.234.114.242:21116/agent`. HTTPS/WSS migration and full RustDesk feature parity remain outstanding. The portable Windows x64 artifact comes from successful Actions run `34681940355`, agent revision `68393c1`; the subsequent release only changes dashboard dependencies and upload hashing. The supplied launcher sets the VPS endpoint, Graphics Services display names, and `START_WITH_WINDOWS=false`.
+
+Verified: external HTTP 200 on both dashboard and API ports, authenticated device listing, rejection of anonymous device access, CORS and agent WebSocket upgrade. Actual Windows screen/control/file transfer still requires a connected Windows computer.
