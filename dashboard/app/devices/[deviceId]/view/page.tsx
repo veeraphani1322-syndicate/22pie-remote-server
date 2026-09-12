@@ -204,7 +204,25 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
     moveFrameRef.current = requestAnimationFrame(() => { moveFrameRef.current = null; const latest = moveRef.current; if (latest) sendMouse("mouse_move", { x: latest.x, y: latest.y }, true); });
   }
   function buttonName(button: number) { return button === 0 ? "left" : button === 1 ? "middle" : button === 2 ? "right" : null; }
-  function mouseButton(event: React.MouseEvent<HTMLVideoElement>, down: boolean) { const button = buttonName(event.button); if (!button) return; event.preventDefault(); sendMouse(down ? "mouse_down" : "mouse_up", { button }); }
+  function mouseButton(event: React.MouseEvent<HTMLVideoElement>, down: boolean) {
+    const button = buttonName(event.button);
+    if (!button) return;
+    const point = pointer(event);
+    if (down && !point) return;
+    event.preventDefault();
+    if (moveFrameRef.current != null) {
+      cancelAnimationFrame(moveFrameRef.current);
+      moveFrameRef.current = null;
+    }
+    moveRef.current = null;
+    // A button event must use its own position, not the last animation frame's position.
+    if (point) sendMouse("mouse_move", { x: point.x, y: point.y });
+    sendMouse(down ? "mouse_down" : "mouse_up", { button });
+    if (down && keyboardEnabled) {
+      videoRef.current?.focus();
+      setKeyboardCaptured(true);
+    }
+  }
   function releaseButtons() { for (const button of ["left", "right", "middle"]) sendMouse("mouse_up", { button }); }
   function mouseWheel(event: React.WheelEvent<HTMLVideoElement>) { event.preventDefault(); sendMouse("mouse_scroll", { dx: Math.max(-1200, Math.min(1200, Math.round(-event.deltaX))), dy: Math.max(-1200, Math.min(1200, Math.round(-event.deltaY))) }); }
   function sendKeyboard(type: string, fields: Record<string, unknown>, force = false) {
@@ -227,8 +245,9 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   }
   const stateLabel = state === "waiting_frame" ? "Waiting for first frame" : state === "streaming" ? "Streaming" : state;
   return <main className="viewer"><header><Link href="/devices" className="back">← Devices</Link><div><strong>{device?.deviceName ?? "Remote device"}</strong><span className={`connection ${state}`}>{stateLabel}</span></div><button className="secondary" onClick={disconnect}>Disconnect</button></header>
-    <section className="screen"><video ref={videoRef} tabIndex={0} autoPlay playsInline onPlaying={videoPlaying} onClick={() => { if(keyboardEnabled){videoRef.current?.focus();setKeyboardCaptured(true);} }} onBlur={() => {releaseKeys();setKeyboardCaptured(false);}} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onMouseMove={mouseMove} onMouseDown={(event) => mouseButton(event, true)} onMouseUp={(event) => mouseButton(event, false)} onMouseLeave={releaseButtons} onContextMenu={(event) => mouseEnabled && event.preventDefault()} onWheel={mouseWheel} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}{keyboardEnabled && <div className="keyboard-status" role="status">Keyboard control {keyboardCaptured ? "captured — Ctrl+Alt+Esc releases" : "enabled — click the screen to capture"}{keyboardWarning && <p>{keyboardWarning}</p>}</div>}</section>
+    <section className="screen"><video ref={videoRef} tabIndex={0} autoPlay playsInline onPlaying={videoPlaying} onClick={() => { if(keyboardEnabled){videoRef.current?.focus();setKeyboardCaptured(true);} }} onBlur={() => {releaseKeys();setKeyboardCaptured(false);}} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onMouseMove={mouseMove} onMouseDown={(event) => mouseButton(event, true)} onMouseUp={(event) => mouseButton(event, false)} onMouseLeave={releaseButtons} onContextMenu={(event) => mouseEnabled && event.preventDefault()} onWheel={mouseWheel} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}</section>
     <section className="file-transfer" aria-label="Send a file">
+      {keyboardEnabled && <div className="keyboard-status" role="status">Keyboard control {keyboardCaptured ? "captured — Ctrl+Alt+Esc releases" : "enabled — click the screen to capture"}{keyboardWarning && <p>{keyboardWarning}</p>}</div>}
       <label>Send file to remote computer (up to 32 MiB)
         <input type="file" disabled={!filesReady || fileBusy || state !== "streaming"} onChange={event => {
           const file = event.currentTarget.files?.[0]; event.currentTarget.value = "";
