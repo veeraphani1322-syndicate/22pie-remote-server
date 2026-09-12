@@ -1,9 +1,10 @@
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-
 mod config;
 mod connection;
 mod consent;
 mod device;
+mod file_transfer;
+#[cfg(windows)]
+mod file_transfer_channel;
 mod keyboard;
 mod logging;
 mod media;
@@ -35,7 +36,7 @@ async fn main() -> Result<()> {
         device.device_id,
         config.server_url,
     );
-    info!(app_display_name=%config.app_display_name, window_title=%config.window_title, tray_display_name=%config.tray_display_name, start_with_windows=config.start_with_windows, "Background agent starting");
+    info!(app_display_name=%config.app_display_name, window_title=%config.window_title, tray_display_name=%config.tray_display_name, start_with_windows=config.start_with_windows, "Foreground agent starting");
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_task = tokio::spawn(async move {

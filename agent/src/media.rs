@@ -130,6 +130,9 @@ mod windows {
         let mouse = Arc::new(Mutex::new(MouseController::new()));
         let keyboard_authorized = Arc::new(AtomicBool::new(false));
         let keyboard = Arc::new(Mutex::new(KeyboardController::new()));
+        let file_prompt = Arc::new(AtomicBool::new(false));
+        let control_prompt = file_prompt.clone();
+        let control_session_id = session_id.clone();
         let channel = peer.create_data_channel("control", None).await?;
         let opened_at = Instant::now();
         channel.on_open(Box::new(move || {
@@ -148,9 +151,10 @@ mod windows {
             let controller = message_controller.clone();
             let keyboard_authorized = message_keyboard_authorized.clone();
             let keyboard = message_keyboard.clone();
-            let expected_session_id = session_id.clone();
+            let expected_session_id = control_session_id.clone();
+            let file_prompt = control_prompt.clone();
             Box::pin(async move {
-                if !data.is_string {
+                if file_prompt.load(Ordering::Acquire) || !data.is_string {
                     return;
                 }
                 let success = if authorized.load(Ordering::Acquire) {
@@ -204,6 +208,17 @@ mod windows {
             }
             Box::pin(async {})
         }));
+        let prompt_mouse = mouse.clone();
+        let prompt_keyboard = keyboard.clone();
+        crate::file_transfer_channel::attach(&peer, session_id, file_prompt, move || {
+            if let Ok(mut mouse) = prompt_mouse.lock() {
+                mouse.release_all();
+            }
+            if let Ok(mut keyboard) = prompt_keyboard.lock() {
+                keyboard.release_all();
+            }
+        })
+        .await?;
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_H264.to_owned(),

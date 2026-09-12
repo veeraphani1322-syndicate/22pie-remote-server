@@ -1,6 +1,6 @@
 # Graphic Service — 22Pie authorized remote agent
 
-This Rust agent authenticates an authorized computer, registers it with the 22Pie server, sends heartbeats, reconnects with capped exponential backoff, and supports consent-gated live viewing of the Windows primary monitor. It does not contain mouse/keyboard control, command execution, persistence, surveillance, clipboard access, or file-transfer capabilities.
+This Rust agent authenticates an authorized computer, registers it with the 22Pie server, sends heartbeats, reconnects with capped exponential backoff, and supports consent-gated live viewing of the Windows primary monitor. It includes mouse and keyboard control with consent and scoped trust. Browser-to-Windows file upload is implemented with explicit per-file approval and awaits Windows validation. Clipboard, reverse file transfer, audio, and the other migration features are not implemented yet.
 
 ## Phase 3 screen sharing
 
@@ -48,7 +48,7 @@ Future launches by the same Windows user reuse that UUID. If the file is unreada
 
 ## Windows Standalone Build
 
-The release executable is a single background Windows GUI-subsystem application. It opens no console, remains visible as `GraphicService.exe` in Task Manager, and uses no watchdog or child product executable.
+The release executable opens a visible console. Keep it open during remote access and press Ctrl+C to disconnect. Startup at login is disabled by default. It uses no watchdog or child product executable.
 
 ### Build locally on Windows
 
@@ -65,7 +65,7 @@ The executable is generated at:
 target\release\GraphicService.exe
 ```
 
-Copy the executable to an authorized Windows 10/11 computer and double-click it. Use Task Manager to stop it. See `README-Windows.txt` for startup-at-login and migration instructions.
+Copy the executable to an authorized Windows 10/11 computer and double-click it. Press Ctrl+C in its console to stop it. See `README-Windows.txt` for startup-at-login and migration instructions.
 
 ### Build with GitHub Actions
 
@@ -83,7 +83,7 @@ The workflow also runs automatically when agent files or the workflow itself cha
 
 ## Run and verify
 
-Double-click `GraphicService.exe`. The production build has no console output. Verify startup in Task Manager, the dashboard, and `%LOCALAPPDATA%\22Pie\RemoteAgent\logs\GraphicService.log`.
+Double-click `GraphicService.exe`. Verify startup in the visible console, the dashboard, and `%LOCALAPPDATA%\22Pie\RemoteAgent\logs\GraphicService.log`.
 
 ```text
 22Pie Remote Agent v0.1.1

@@ -19,6 +19,7 @@ futures-util = "0.3"
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 sysinfo = "0.33"
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = "0.26"

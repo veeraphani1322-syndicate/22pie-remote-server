@@ -1,0 +1,7 @@
+{
+  "remoteServerUrl": "ws://8.234.114.242:21116/agent",
+  "appDisplayName": "22Pie Remote",
+  "windowTitle": "22Pie Remote",
+  "trayDisplayName": "22Pie Remote",
+  "startWithWindows": false
+}

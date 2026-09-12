@@ -4,7 +4,7 @@ Central server for authorized remote support on computers you own or have explic
 
 Phase 3 adds an authenticated Next.js dashboard, persistent per-device Ed25519 credentials, owner-filtered device access, explicit Windows Allow/Deny consent, WebRTC signaling, primary-monitor H.264 capture at up to 1280×720/15 FPS, configurable STUN/TURN, visible sharing status, session timeouts, and actual browser WebRTC statistics. See [`docs/phase-3-deployment.md`](docs/phase-3-deployment.md) for deployment and cross-network validation.
 
-It intentionally does **not** include mouse/keyboard control, clipboard access, command execution, file transfer, unattended persistence, a Windows service, or stealth functionality.
+Mouse and keyboard control and permission-scoped trusted access are implemented. The Windows agent opens a visible console and does not enable startup at login by default. Browser-to-Windows file upload now has per-file approval, progress, cancellation, and integrity checks (Windows validation pending). Clipboard, reverse file transfer, audio, and the remaining RustDesk feature migration are tracked in [`docs/rustdesk-migration.md`](docs/rustdesk-migration.md).
 
 ## Requirements
 

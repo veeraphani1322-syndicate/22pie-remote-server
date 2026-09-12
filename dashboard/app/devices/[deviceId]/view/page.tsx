@@ -5,6 +5,7 @@ import { use, useEffect, useRef, useState } from "react";
 import { api, WS_URL } from "@/lib/api";
 import { normalizedVideoPoint, type Point } from "@/lib/mouse-control";
 import { isLocalKeyboardRelease, modifiersOf, shouldSendText } from "@/lib/keyboard-control";
+import { FileSender, idleTransfer, type TransferProgress } from "@/lib/file-transfer";
 import { hasCompleteRemoteControl } from "@/lib/remote-control";
 
 type ViewState = "requesting" | "awaiting" | "starting" | "negotiating" | "waiting_frame" | "streaming" | "rejected" | "ended" | "failed";
@@ -13,6 +14,10 @@ interface IceServer { urls: string | string[]; username?: string; credential?: s
 
 export default function ViewerPage({ params }: { params: Promise<{ deviceId: string }> }) {
   const { deviceId } = use(params);
+  const fileSenderRef = useRef<FileSender | null>(null);
+  const [filesReady, setFilesReady] = useState(false);
+  const [transfer, setTransfer] = useState<TransferProgress>(idleTransfer);
+  const fileBusy = ["hashing", "awaiting", "sending", "verifying"].includes(transfer.status);
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -79,6 +84,14 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
         };
         peer.ontrack = ({ streams }) => { if (videoRef.current && streams[0]) videoRef.current.srcObject = streams[0]; };
         peer.ondatachannel = ({ channel }) => {
+          if (channel.label === "files-v1") {
+            fileSenderRef.current?.dispose();
+            fileSenderRef.current = new FileSender(channel, sessionId, progress => { if (active) setTransfer(progress); });
+            channel.onopen = () => { if (active) setFilesReady(true); };
+            channel.onclose = () => { if (active) setFilesReady(false); };
+            setFilesReady(channel.readyState === "open");
+            return;
+          }
           if (channel.label !== "control") { channel.close(); return; }
           channelRef.current = channel;
           channel.onopen = () => { console.debug(`CONTROL_CHANNEL_STATE=OPEN sessionId=${sessionId}`); setControlChannel("connected"); };
@@ -165,7 +178,7 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
       } catch (reason) { setState("failed"); setError(reason instanceof Error ? reason.message : "Unable to start session"); }
     };
     void start();
-    return () => { active = false; if (statsTimer) window.clearInterval(statsTimer); if (moveFrameRef.current != null) cancelAnimationFrame(moveFrameRef.current); heldKeysRef.current.clear(); const video=videoRef.current; video?.pause(); if(video) video.srcObject=null; channelRef.current?.close(); channelRef.current=null; const socket = socketRef.current; if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_end", sessionId: new URL(socket.url).searchParams.get("sessionId"), reason: "viewer_left" })); socket?.close(); socketRef.current=null; peerRef.current?.close(); peerRef.current=null; sessionIdRef.current=null; };
+    return () => { active = false; fileSenderRef.current?.dispose(); fileSenderRef.current=null; if (statsTimer) window.clearInterval(statsTimer); if (moveFrameRef.current != null) cancelAnimationFrame(moveFrameRef.current); heldKeysRef.current.clear(); const video=videoRef.current; video?.pause(); if(video) video.srcObject=null; channelRef.current?.close(); channelRef.current=null; const socket = socketRef.current; if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "session_end", sessionId: new URL(socket.url).searchParams.get("sessionId"), reason: "viewer_left" })); socket?.close(); socketRef.current=null; peerRef.current?.close(); peerRef.current=null; sessionIdRef.current=null; };
   }, [deviceId]);
 
   async function fullscreen() { await videoRef.current?.requestFullscreen(); }
@@ -176,7 +189,7 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
       setState("streaming");
     }
   }
-  function disconnect() { releaseKeys(); releaseButtons(); const socket = socketRef.current; const sessionId = sessionIdRef.current; if (socket?.readyState === WebSocket.OPEN && sessionId) socket.send(JSON.stringify({ type: "session_end", sessionId, reason: "viewer_disconnected" })); const video=videoRef.current; video?.pause(); if(video) video.srcObject=null; channelRef.current?.close(); channelRef.current=null; peerRef.current?.close(); peerRef.current=null; socket?.close(); socketRef.current=null; heldKeysRef.current.clear(); setKeyboardCaptured(false); setState("ended"); }
+  function disconnect() { fileSenderRef.current?.dispose(); fileSenderRef.current=null; setFilesReady(false); releaseKeys(); releaseButtons(); const socket = socketRef.current; const sessionId = sessionIdRef.current; if (socket?.readyState === WebSocket.OPEN && sessionId) socket.send(JSON.stringify({ type: "session_end", sessionId, reason: "viewer_disconnected" })); const video=videoRef.current; video?.pause(); if(video) video.srcObject=null; channelRef.current?.close(); channelRef.current=null; peerRef.current?.close(); peerRef.current=null; socket?.close(); socketRef.current=null; heldKeysRef.current.clear(); setKeyboardCaptured(false); setState("ended"); }
 
   function sendMouse(type: string, fields: Record<string, unknown>, move = false) {
     const channel = channelRef.current; const sessionId = sessionIdRef.current;
@@ -215,6 +228,21 @@ export default function ViewerPage({ params }: { params: Promise<{ deviceId: str
   const stateLabel = state === "waiting_frame" ? "Waiting for first frame" : state === "streaming" ? "Streaming" : state;
   return <main className="viewer"><header><Link href="/devices" className="back">← Devices</Link><div><strong>{device?.deviceName ?? "Remote device"}</strong><span className={`connection ${state}`}>{stateLabel}</span></div><button className="secondary" onClick={disconnect}>Disconnect</button></header>
     <section className="screen"><video ref={videoRef} tabIndex={0} autoPlay playsInline onPlaying={videoPlaying} onClick={() => { if(keyboardEnabled){videoRef.current?.focus();setKeyboardCaptured(true);} }} onBlur={() => {releaseKeys();setKeyboardCaptured(false);}} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onMouseMove={mouseMove} onMouseDown={(event) => mouseButton(event, true)} onMouseUp={(event) => mouseButton(event, false)} onMouseLeave={releaseButtons} onContextMenu={(event) => mouseEnabled && event.preventDefault()} onWheel={mouseWheel} />{state !== "streaming" && <div className="screen-message"><strong>{state === "awaiting" ? "Waiting for authorization" : state === "starting" ? "Starting capture" : state === "negotiating" ? "Negotiating WebRTC" : state === "waiting_frame" ? "WebRTC connected — waiting for first video frame" : state === "requesting" ? "Requesting session" : ""}</strong>{error && <p>{error}</p>}</div>}{keyboardEnabled && <div className="keyboard-status" role="status">Keyboard control {keyboardCaptured ? "captured — Ctrl+Alt+Esc releases" : "enabled — click the screen to capture"}{keyboardWarning && <p>{keyboardWarning}</p>}</div>}</section>
+    <section className="file-transfer" aria-label="Send a file">
+      <label>Send file to remote computer (up to 32 MiB)
+        <input type="file" disabled={!filesReady || fileBusy || state !== "streaming"} onChange={event => {
+          const file = event.currentTarget.files?.[0]; event.currentTarget.value = "";
+          if (file && fileSenderRef.current) void fileSenderRef.current.send(file).catch(error => setTransfer({ ...idleTransfer, status: "failed", message: error instanceof Error ? error.message : "Transfer failed" }));
+        }} />
+      </label>
+      <p>Each file needs approval on the remote computer. Files are saved in Downloads / 22Pie Transfers and are never opened automatically.</p>
+      {transfer.status !== "idle" && <div role="status" aria-live="polite">
+        <strong>{transfer.name}</strong> — {transfer.status === "awaiting" ? "Waiting for local approval" : transfer.status}
+        {transfer.status === "sending" && <progress aria-label="File transfer progress" value={transfer.sent} max={Math.max(1, transfer.total)} />}
+        {transfer.message && <p>{transfer.message}</p>}
+      </div>}
+      {fileBusy && transfer.status !== "verifying" && <button className="secondary" onClick={() => fileSenderRef.current?.cancel()}>Cancel transfer</button>}
+    </section>
     <footer><div><span>Resolution<strong>{stats.resolution}</strong></span><span>FPS<strong>{stats.fps}</strong></span><span>Bitrate<strong>{stats.bitrate}</strong></span><span>Network RTT<strong>{stats.networkRtt}</strong></span><span>Packet loss<strong>{stats.packetLoss}</strong></span><span>ICE route<strong>{stats.route}</strong></span><span>Protocol<strong>{stats.protocol}</strong></span><span>Screen<strong>{state === "streaming" ? "Connected" : "Connecting"}</strong></span><span>Control<strong>{controlChannel === "connected" && mouseEnabled && keyboardEnabled ? "Connected" : "Connecting"}</strong></span></div><button className="secondary" onClick={() => void fullscreen()}>Fullscreen</button></footer>
   </main>;
 }

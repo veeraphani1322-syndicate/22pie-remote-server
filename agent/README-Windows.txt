@@ -1,8 +1,8 @@
 Graphic Service — authorized remote-access agent
 
-Start: Double-click GraphicService.exe. The production build runs without a console window and remains visible and terminable in Task Manager.
+Start: Double-click GraphicService.exe. Keep the visible console open while using remote access. Startup at login is disabled by default.
 
-Stop: End GraphicService.exe from Task Manager. There is no watchdog and it will not restart itself.
+Stop: Press Ctrl+C in the console to disconnect cleanly. There is no watchdog and it will not restart itself.
 
 Configuration and preserved data: %LOCALAPPDATA%\22Pie\RemoteAgent\config.json
 This unchanged directory preserves the device identity and trusted SCREEN_VIEW, MOUSE_CONTROL, and KEYBOARD_CONTROL grants.
