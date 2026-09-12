@@ -87,7 +87,7 @@ Reference: https://github.com/rustdesk/rustdesk-server/blob/master/docs/environm
 
 The updated Windows agent offers a session-bound `files-v1` WebRTC data channel.
 The dashboard sends one file at a time, at most 32 MiB, in acknowledged 16 KiB
-chunks. It requires HTTPS (or localhost) for browser SHA-256. Each offer prompts
+chunks. It uses bundled SHA-256 and browser getRandomValues, including on the existing HTTP dashboard. HTTPS/WSS remains recommended for protecting dashboard login and signaling. Each offer prompts
 on Windows for up to 60 seconds; denial, cancellation, and disconnect grant no
 future permission. Remote mouse/keyboard events are suppressed while this local
 approval window is open.

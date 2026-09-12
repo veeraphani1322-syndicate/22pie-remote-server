@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+
 export const MAX_FILE_BYTES = 32 * 1024 * 1024;
 const CHUNK_BYTES = 16 * 1024;
 export type TransferProgress = { status: "idle" | "hashing" | "awaiting" | "sending" | "verifying" | "complete" | "cancelled" | "failed"; name: string; sent: number; total: number; message?: string };
@@ -44,16 +46,21 @@ export class FileSender {
   async send(file: File): Promise<void> {
     if (this.id) throw new Error("A transfer is already active");
     if (file.size > MAX_FILE_BYTES) throw new Error("Files are limited to 32 MiB");
-    if (!globalThis.crypto?.subtle) throw new Error("File transfer requires HTTPS or localhost");
-    this.id = crypto.randomUUID(); this.cancelled = false;
+    if (!globalThis.crypto?.getRandomValues) throw new Error("Secure random numbers are unavailable in this browser");
+    const random = crypto.getRandomValues(new Uint8Array(16));
+    random[6] = (random[6] & 0x0f) | 0x40;
+    random[8] = (random[8] & 0x3f) | 0x80;
+    const hex = Array.from(random, value => value.toString(16).padStart(2, "0")).join("");
+    this.id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    this.cancelled = false;
     this.publish({ status: "hashing", name: file.name, sent: 0, total: file.size, message: undefined });
     try {
       const buffer = await file.arrayBuffer();
-      const digest = await crypto.subtle.digest("SHA-256", buffer);
+      const digest = sha256(new Uint8Array(buffer));
       if (this.cancelled) throw new Error("Transfer cancelled");
-      const sha256 = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("");
+      const digestHex = Array.from(digest, value => value.toString(16).padStart(2, "0")).join("");
       this.publish({ status: "awaiting" });
-      await this.exchange({ type: "file_offer", name: file.name, size: file.size, sha256 }, "file_ready", 0);
+      await this.exchange({ type: "file_offer", name: file.name, size: file.size, sha256: digestHex }, "file_ready", 0);
       this.publish({ status: "sending" });
       for (let offset = 0; offset < buffer.byteLength; offset += CHUNK_BYTES) {
         const chunk = new Uint8Array(buffer, offset, Math.min(CHUNK_BYTES, buffer.byteLength - offset));

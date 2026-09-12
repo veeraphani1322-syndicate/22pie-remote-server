@@ -76,3 +76,24 @@ test("oversized files are rejected before reading or sending", async () => {
   await assert.rejects(instance.send({ size: MAX_FILE_BYTES + 1 } as File), /32 MiB/);
   assert.equal(channel.messages.length, 0); instance.dispose();
 });
+
+
+test("uploads work on the existing HTTP dashboard without subtle or randomUUID", async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+  Object.defineProperty(globalThis, "crypto", { configurable: true, value: { getRandomValues } });
+  const channel = new Channel(); const { instance, progress } = sender(channel);
+  channel.handle = message => {
+    if (message.type === "file_offer") {
+      assert.match(message.transfer_id as string, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      channel.reply(message, "file_ready", { offset: 0 });
+    } else if (message.type === "file_finish") channel.reply(message, "file_complete");
+  };
+  try {
+    await instance.send(new File([], "empty.txt"));
+    assert.equal(progress.at(-1)?.status, "complete");
+  } finally {
+    instance.dispose();
+    if (descriptor) Object.defineProperty(globalThis, "crypto", descriptor);
+  }
+});
