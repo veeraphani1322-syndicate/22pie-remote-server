@@ -4,6 +4,10 @@ The target is DWAgent/DWService functional parity under Graphics Services brandi
 
 Baseline: 22Pie commit `890723c`; DWAgent source commit `0ee89fdb72ae1341516b560ef80a2cbdf26a9d2f`. Live documentation was reviewed on 2026-09-12. No DWService authenticated account, native settings walkthrough, or reference-device testing was available in this audit. Those gaps remain explicitly tracked, including account/billing/API screens and platform exceptions. Windows x64 remains the first delivery platform; other documented platforms remain on the parity backlog.
 
+## Implementation updates
+
+Windows x64 is the only current delivery target, supplied as one executable (user scope update). [Version 0.1.2](windows-0.1.2.md) adds client TLS and manual quality profiles; NET-01 and SCR-02 now have partial implementation. The counts below describe the original audit baseline; the CSV tracks current progress. No new end-to-end parity gate has passed.
+
 ## Inventory
 
 There are 64 tracked requirements: 43 missing, 17 partial, 4 unverified. “Partial” means related implementation exists, not that it meets the reference behavior. “Missing” means no implementation of the required behavior was found in the inspected 22Pie code. “Unverified” requires more reference discovery. Acceptance tests are proposed 22Pie tests, not claims about undocumented DWService behavior.
